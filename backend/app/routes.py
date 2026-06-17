@@ -54,6 +54,7 @@ from .services.ats_parser import parse_careers_url
 from .services.company_search import run_company_search
 from .services.jobs import add_status_event, job_to_read
 from .services.job_fit import analyze_job_fit
+from .services.job_description import enrich_job_description
 from .services.profile import (
     apply_profile_data,
     get_or_create_profile,

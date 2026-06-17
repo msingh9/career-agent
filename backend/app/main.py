@@ -10,7 +10,6 @@ from .database import Base, SessionLocal, engine
 from .routes import router
 from .services.companies import ensure_target_company_schema, seed_default_companies
 from .services.apply_schema import ensure_apply_schema
-from .services.job_description import enrich_job_description
 from .services.job_description_schema import ensure_job_description_schema
 from .services.job_fit import ensure_job_fit_schema
 
