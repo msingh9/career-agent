@@ -12,6 +12,7 @@ from .services.companies import ensure_target_company_schema, seed_default_compa
 from .services.apply_schema import ensure_apply_schema
 from .services.job_description import enrich_job_description
 from .services.job_description_schema import ensure_job_description_schema
+from .services.job_fit import ensure_job_fit_schema
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 
@@ -32,8 +33,8 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="Semiconductor Career Agent",
-    description="Track VP/Senior Director semiconductor job search",
+    title="Career Agent",
+    description="Track and manage your job search",
     lifespan=lifespan,
 )
 

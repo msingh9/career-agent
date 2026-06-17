@@ -52,7 +52,7 @@ if ($needsVenv) {
     & $venvPython -m pip install -r requirements.txt
 }
 
-Write-Host "Starting Semiconductor Career Agent at http://127.0.0.1:8000"
+Write-Host "Starting Career Agent at http://127.0.0.1:8000"
 
 $portPids = netstat -ano | Select-String ":8000\s.*LISTENING" | ForEach-Object {
     ($_.Line -split '\s+')[-1]

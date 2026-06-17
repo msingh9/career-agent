@@ -1,4 +1,4 @@
-# Semiconductor Career Agent
+# Career Agent
 
 Personal MVP for tracking VP / Senior Director semiconductor job search.
 
@@ -24,20 +24,20 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-3. Optional: configure job search API keys
+1. Optional: configure job search API keys
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Get free Adzuna keys from https://developer.adzuna.com/ and set:
+Get free Adzuna keys from [https://developer.adzuna.com/](https://developer.adzuna.com/) and set:
 
 ```
 ADZUNA_APP_ID=your_id
 ADZUNA_APP_KEY=your_key
 ```
 
-Optional: enable AI resume analysis (recommended):
+Optional: enable AI resume analysis (highly recommended):
 
 ```
 OPENAI_API_KEY=your_openai_key
@@ -46,13 +46,13 @@ OPENAI_MODEL=gpt-4o-mini
 
 Without OpenAI, resume upload still works using basic keyword extraction.
 
-4. Start the app:
+1. Start the app:
 
 ```powershell
 .\start.ps1
 ```
 
-5. Open http://127.0.0.1:8000
+1. Open [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
 ## Usage
 
@@ -87,3 +87,4 @@ Without OpenAI, resume upload still works using basic keyword extraction.
 - `DELETE /api/companies/{id}`
 - `POST /api/agent/company-search`
 - `GET /api/dashboard`
+
