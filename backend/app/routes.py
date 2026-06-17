@@ -48,6 +48,7 @@ from .services.apply_service import (
     prepare_apply,
     run_auto_apply,
 )
+from .services.apply_automation import SCREENSHOTS_DIR
 from .services.apply_fill_payload import find_job_by_url
 from .services.companies import apply_parsed_company_fields
 from .services.ats_parser import parse_careers_url
@@ -294,6 +295,15 @@ async def job_apply_auto(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/jobs/{job_id}/apply/screenshot")
+def job_apply_screenshot(job_id: int):
+    for suffix in ("fill", "submit"):
+        path = SCREENSHOTS_DIR / f"job_{job_id}_{suffix}.png"
+        if path.exists():
+            return FileResponse(path, media_type="image/png")
+    raise HTTPException(status_code=404, detail="No screenshot found for this job.")
 
 
 @router.get("/apply/match")

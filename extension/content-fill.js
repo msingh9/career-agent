@@ -37,6 +37,36 @@ window.CareerAgentFill = {
     return false;
   },
 
+  async uploadResume(apiBase) {
+    try {
+      const res = await fetch(`${apiBase}/api/profile/resume/file`);
+      if (!res.ok) return false;
+      const blob = await res.blob();
+      const disposition = res.headers.get("content-disposition") || "";
+      const match = disposition.match(/filename="?([^"]+)"?/i);
+      const filename = match ? match[1] : "resume.pdf";
+      const file = new File([blob], filename, { type: blob.type || "application/pdf" });
+      const selectors = [
+        'input[type="file"]#resume',
+        'input[type="file"][name*="resume" i]',
+        'input[type="file"]',
+      ];
+      for (const selector of selectors) {
+        const input = document.querySelector(selector);
+        if (!input) continue;
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+        input.files = dataTransfer.files;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
+    } catch (_error) {
+      return false;
+    }
+    return false;
+  },
+
   fillTextareas(answers) {
     const filled = [];
     document.querySelectorAll("textarea").forEach((textarea, index) => {
@@ -127,6 +157,10 @@ window.CareerAgentFill = {
           return;
         }
         const filled = window.CareerAgentFillHandlers[atsType](response.payload);
+        if (response.apiBase) {
+          const resumeUploaded = await this.uploadResume(response.apiBase);
+          if (resumeUploaded) filled.push("resume");
+        }
         this.showBanner(
           filled.length
             ? `Filled ${filled.length} field(s): ${filled.join(", ")}. Review and submit manually.`

@@ -216,67 +216,71 @@ def run_apply_automation(
         )
 
     screenshot_path = SCREENSHOTS_DIR / f"job_{job.id}_{'submit' if submit else 'fill'}.png"
+    keep_browser_open = not submit
+    visible_browser = keep_browser_open or not headless
 
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=headless and submit)
-        page = browser.new_page()
-        try:
-            page.goto(job.url, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(1500)
+    playwright = sync_playwright().start()
+    browser = playwright.chromium.launch(headless=not visible_browser)
+    page = browser.new_page()
+    try:
+        page.goto(job.url, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(1500)
 
-            if payload.ats_type == "greenhouse":
-                filled = _fill_greenhouse(page, payload, resume_path)
-            else:
-                filled = _fill_lever(page, payload, resume_path)
+        if payload.ats_type == "greenhouse":
+            filled = _fill_greenhouse(page, payload, resume_path)
+        else:
+            filled = _fill_lever(page, payload, resume_path)
 
-            if not filled:
-                return AutomationResult(
-                    success=False,
-                    status="failed",
-                    message="Opened the posting but could not find application fields to fill.",
-                )
-
-            page.screenshot(path=str(screenshot_path), full_page=True)
-            submitted = False
-
-            if submit:
-                submitted = _click_submit(page)
-                page.wait_for_timeout(2000)
-                page.screenshot(path=str(screenshot_path), full_page=True)
-                if not submitted:
-                    return AutomationResult(
-                        success=True,
-                        status="filled",
-                        message="Form filled but submit button was not found. Review the browser screenshot and submit manually.",
-                        filled_fields=filled,
-                        submitted=False,
-                        screenshot_path=str(screenshot_path),
-                    )
-
-            status = "submitted" if submitted else "filled"
-            message = (
-                "Application submitted automatically."
-                if submitted
-                else "Application form filled. Review and submit manually if needed."
-            )
-            return AutomationResult(
-                success=True,
-                status=status,
-                message=message,
-                filled_fields=filled,
-                submitted=submitted,
-                screenshot_path=str(screenshot_path),
-            )
-        except Exception as exc:
-            try:
-                page.screenshot(path=str(screenshot_path), full_page=True)
-            except Exception:
-                screenshot_path = None
+        if not filled:
             return AutomationResult(
                 success=False,
                 status="failed",
-                message=f"Auto-apply failed: {exc}",
-                screenshot_path=str(screenshot_path) if screenshot_path else None,
+                message="Opened the posting but could not find application fields to fill.",
             )
-        finally:
+
+        page.screenshot(path=str(screenshot_path), full_page=True)
+        submitted = False
+
+        if submit:
+            submitted = _click_submit(page)
+            page.wait_for_timeout(2000)
+            page.screenshot(path=str(screenshot_path), full_page=True)
+            if not submitted:
+                return AutomationResult(
+                    success=True,
+                    status="filled",
+                    message="Form filled but submit button was not found. Review the browser screenshot and submit manually.",
+                    filled_fields=filled,
+                    submitted=False,
+                    screenshot_path=str(screenshot_path),
+                )
+
+        status = "submitted" if submitted else "filled"
+        message = (
+            "Application submitted automatically."
+            if submitted
+            else "Application form filled in a browser window left open for your review. Submit manually when ready."
+        )
+        return AutomationResult(
+            success=True,
+            status=status,
+            message=message,
+            filled_fields=filled,
+            submitted=submitted,
+            screenshot_path=str(screenshot_path),
+        )
+    except Exception as exc:
+        try:
+            page.screenshot(path=str(screenshot_path), full_page=True)
+        except Exception:
+            screenshot_path = None
+        return AutomationResult(
+            success=False,
+            status="failed",
+            message=f"Auto-apply failed: {exc}",
+            screenshot_path=str(screenshot_path) if screenshot_path else None,
+        )
+    finally:
+        if not keep_browser_open:
             browser.close()
+            playwright.stop()

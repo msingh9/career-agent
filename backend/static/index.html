@@ -80,8 +80,10 @@
           <div id="savedAnswersList" class="saved-answers-list"></div>
           <label class="checkbox-label">
             <input id="applyAutoEnabled" type="checkbox" />
-            Allow auto-apply when confidence is high (future)
+            Allow auto-apply when confidence is high enough
           </label>
+          <label>Minimum confidence for auto-submit (%)</label>
+          <input id="applyMinConfidence" type="number" min="60" max="100" value="85" />
           <label class="checkbox-label">
             <input id="applyAlwaysConfirm" type="checkbox" checked />
             Always confirm before submit
@@ -89,6 +91,23 @@
           <button id="extractApplyProfileBtn" class="btn secondary" type="button">Refresh from resume</button>
           <button id="saveApplyProfileBtn" class="btn secondary" type="button">Save apply profile</button>
           <p id="applyProfileMessage" class="hint"></p>
+        </section>
+
+        <section class="panel">
+          <h2>Chrome extension (Phase 2)</h2>
+          <p class="hint">Fill Greenhouse and Lever forms in your browser from your local apply profile.</p>
+          <ol class="extension-steps">
+            <li>Start Career Agent with <code>.\start.ps1</code></li>
+            <li>Open <code>chrome://extensions</code> → enable <strong>Developer mode</strong></li>
+            <li>Click <strong>Load unpacked</strong> → select the <code>extension</code> folder in this project</li>
+            <li>Click the extension icon → confirm API URL is <code>http://127.0.0.1:8000</code> → <strong>Test connection</strong></li>
+            <li>In Career Agent, select a job → click <a class="link-btn" href="#" id="sidebarAssistHint">Browser assist fill</a> → click <strong>Fill from Career Agent</strong> on the posting</li>
+          </ol>
+        </section>
+
+        <section class="panel">
+          <h2>Playwright auto-fill (Phase 3)</h2>
+          <p class="hint"><code>.\start.ps1</code> installs Playwright Chromium automatically. On a job with Greenhouse or Lever posting, use <strong>Auto-fill form (no submit)</strong> to open a visible browser, or <strong>Auto-apply (submit)</strong> when auto-apply is enabled and confidence is high enough.</p>
         </section>
 
         <section class="panel">
@@ -162,7 +181,7 @@
         </section>
 
         <section id="pipelineView" class="content-grid">
-          <div class="table-card">
+          <div class="table-card pipeline-list-panel">
             <table>
               <thead>
                 <tr>
@@ -181,7 +200,16 @@
             </table>
           </div>
 
-          <div id="jobDetail" class="detail-card empty">
+          <div
+            id="pipelineResizer"
+            class="pipeline-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize job list and detail panels"
+            tabindex="0"
+          ></div>
+
+          <div id="jobDetail" class="detail-card pipeline-detail-panel empty">
             <h3>Select a job</h3>
             <p>Choose a role to review details, update status, add notes, and open the posting.</p>
           </div>

@@ -156,8 +156,6 @@ def get_assist_url(db: Session, job_id: int) -> dict:
     feasibility = assess_apply_feasibility(job, profile)
     if feasibility.ats_type not in {"greenhouse", "lever"}:
         raise ValueError("Browser assist fill is only available for Greenhouse and Lever postings.")
-    if feasibility.apply_mode == "manual_only" and feasibility.confidence < 60:
-        raise ValueError("Confidence is too low for assist fill. Complete your apply profile or use manual apply.")
 
     attempt = ApplyAttempt(
         job_id=job.id,
@@ -205,8 +203,8 @@ def run_auto_apply(
                 f"ensure confidence is at least {apply_profile.settings.min_auto_confidence}%, "
                 "and use a Greenhouse or Lever posting."
             )
-    elif feasibility.confidence < 60:
-        raise ValueError("Confidence is too low for auto-fill. Use manual apply.")
+    elif not apply_profile.identity.email.strip():
+        raise ValueError("Add your email in Apply profile before auto-fill.")
 
     if not _kit_from_job(job):
         prepare_apply(db, job_id)

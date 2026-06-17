@@ -48,9 +48,14 @@ if (!$needsVenv) {
 if ($needsVenv) {
     Write-Host "Creating virtual environment with $($pythonCmd -join ' ')..."
     & $pythonCmd[0] $pythonCmd[1..($pythonCmd.Length - 1)] -m venv .venv
-    & $venvPython -m pip install --upgrade pip
-    & $venvPython -m pip install -r requirements.txt
 }
+
+Write-Host "Installing Python dependencies..."
+& $venvPython -m pip install --upgrade pip
+& $venvPython -m pip install -r requirements.txt
+
+Write-Host "Installing Playwright Chromium (Phase 3 auto-fill)..."
+& $venvPython -m playwright install chromium
 
 Write-Host "Starting Career Agent at http://127.0.0.1:8000"
 

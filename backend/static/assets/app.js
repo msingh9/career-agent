@@ -17,6 +17,7 @@ let selectedJobId = null;
 let targetCompanies = [];
 let pendingNlPlan = null;
 let applyStatusCache = new Map();
+let applyProfileCache = null;
 
 const applyModeLabels = {
   manual_only: "Manual",
@@ -24,6 +25,54 @@ const applyModeLabels = {
   auto_with_review: "Auto (review)",
   auto: "Auto",
 };
+
+function buildAssistUrl(jobUrl, jobId) {
+  const separator = jobUrl.includes("?") ? "&" : "?";
+  return `${jobUrl}${separator}career_agent_job=${jobId}`;
+}
+
+function isExtensionAts(atsType) {
+  return atsType === "greenhouse" || atsType === "lever";
+}
+
+function isExtensionAtsUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.includes("greenhouse.io") || host.includes("lever.co");
+  } catch (_error) {
+    return false;
+  }
+}
+
+function hasApplyEmail() {
+  return Boolean(applyProfileCache?.identity?.email?.trim());
+}
+
+function canUseBrowserAssist(feasibility, job) {
+  return isExtensionAts(feasibility.ats_type) || isExtensionAtsUrl(job.url);
+}
+
+function canUseAutoFill(feasibility, job) {
+  return canUseBrowserAssist(feasibility, job) && hasApplyEmail();
+}
+
+function autoFillBlockedMessage(feasibility, job) {
+  if (canUseAutoFill(feasibility, job)) return null;
+  if (!canUseBrowserAssist(feasibility, job)) {
+    return "Auto-fill needs a Greenhouse or Lever posting URL. Jobs imported from Adzuna often link to other sites — use Open posting and add the direct application URL if needed.";
+  }
+  if (!hasApplyEmail()) {
+    return "Add your email in Apply profile (sidebar) to unlock auto-fill.";
+  }
+  return "Auto-fill is not available for this posting.";
+}
+
+async function openBrowserAssistFill(jobId) {
+  const result = await api(`/jobs/${jobId}/apply/assist`, { method: "POST" });
+  window.open(result.url, "_blank", "noopener,noreferrer");
+  searchMessage.textContent = result.message;
+  return result;
+}
 
 const jobsTableBody = document.getElementById("jobsTableBody");
 const jobDetail = document.getElementById("jobDetail");
@@ -140,9 +189,11 @@ function renderApplyPanel(job, status) {
   const materials = kit?.materials;
   const checklist = kit?.checklist || [];
   const copyFields = kit?.copy_fields || {};
-  const canAssist = ["greenhouse", "lever"].includes(feasibility.ats_type) && feasibility.confidence >= 60;
-  const canAutoFill = canAssist;
+  const canAssist = canUseBrowserAssist(feasibility, job);
+  const canAutoFill = canUseAutoFill(feasibility, job);
+  const autoFillBlocked = autoFillBlockedMessage(feasibility, job);
   const canAutoSubmit = feasibility.can_auto_submit;
+  const assistUrl = buildAssistUrl(job.url, job.id);
 
   return `
     <section class="apply-card">
@@ -166,13 +217,15 @@ function renderApplyPanel(job, status) {
       <div class="apply-actions-row">
         ${
           canAssist
-            ? `<button class="btn secondary" id="assistFillBtn" type="button">Browser assist fill</button>`
-            : ""
+            ? `<a class="btn secondary" id="assistFillLink" href="${assistUrl}" target="_blank" rel="noopener noreferrer">Browser assist fill</a>`
+            : `<span class="hint">Browser assist fill needs a Greenhouse or Lever posting URL.</span>`
         }
         ${
           canAutoFill
             ? `<button class="btn secondary" id="autoFillBtn" type="button">Auto-fill form (no submit)</button>`
-            : ""
+            : autoFillBlocked
+              ? `<span class="hint">${autoFillBlocked}</span>`
+              : ""
         }
         ${
           canAutoSubmit
@@ -180,7 +233,21 @@ function renderApplyPanel(job, status) {
             : ""
         }
       </div>
-      <p class="hint">Phase 2: install the Chrome extension from <code>extension/</code> for in-browser fill. Phase 3: auto-fill uses Playwright locally.</p>
+      <details class="apply-phase-hint">
+        <summary>Phase 2: Chrome extension · Phase 3: Playwright</summary>
+        <p class="hint">
+          ${
+            canAssist
+              ? `<a class="link-btn" id="assistFillHintLink" href="${assistUrl}" target="_blank" rel="noopener noreferrer">Browser assist fill</a> opens the posting for the Chrome extension. `
+              : ""
+          }
+          ${
+            canAutoFill
+              ? `<button class="link-btn" type="button" id="autoFillHintBtn">Auto-fill</button> uses local Playwright without submit.`
+              : autoFillBlocked || "Save your email in Apply profile to use Playwright auto-fill on Greenhouse or Lever jobs."
+          }
+        </p>
+      </details>
       ${
         kit
           ? `
@@ -313,6 +380,71 @@ function renderJobsTable() {
   });
 }
 
+function initPipelineResizer() {
+  const pipelineView = document.getElementById("pipelineView");
+  const resizer = document.getElementById("pipelineResizer");
+  const listPanel = pipelineView?.querySelector(".pipeline-list-panel");
+  if (!pipelineView || !resizer || !listPanel) return;
+
+  const storageKey = "careerAgent.pipelineListWidth";
+  const savedWidth = localStorage.getItem(storageKey);
+  if (savedWidth) {
+    pipelineView.style.setProperty("--pipeline-list-width", `${savedWidth}px`);
+  }
+
+  let startX = 0;
+  let startWidth = 0;
+
+  const clampWidth = (width) => {
+    const bounds = pipelineView.getBoundingClientRect();
+    const min = 280;
+    const max = bounds.width - 280;
+    return Math.min(Math.max(width, min), max);
+  };
+
+  const setWidth = (width) => {
+    const nextWidth = clampWidth(width);
+    pipelineView.style.setProperty("--pipeline-list-width", `${nextWidth}px`);
+    return nextWidth;
+  };
+
+  const stopDragging = () => {
+    resizer.classList.remove("dragging");
+    document.body.classList.remove("resizing-panels");
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", stopDragging);
+    const width = parseInt(pipelineView.style.getPropertyValue("--pipeline-list-width"), 10);
+    if (!Number.isNaN(width)) {
+      localStorage.setItem(storageKey, String(width));
+    }
+  };
+
+  const onMouseMove = (event) => {
+    setWidth(startWidth + (event.clientX - startX));
+  };
+
+  resizer.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    startX = event.clientX;
+    startWidth = listPanel.getBoundingClientRect().width;
+    resizer.classList.add("dragging");
+    document.body.classList.add("resizing-panels");
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", stopDragging);
+  });
+
+  resizer.addEventListener("keydown", (event) => {
+    const currentWidth = listPanel.getBoundingClientRect().width;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setWidth(currentWidth - 24);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setWidth(currentWidth + 24);
+    }
+  });
+}
+
 function renderFitPanel(job, fit) {
   if (!fit) {
     return `
@@ -439,6 +571,11 @@ function renderJobDetail() {
     ${renderApplyPanel(job, applyStatusCache.get(job.id))}
     <div class="detail-actions">
       <a class="btn secondary" href="${job.url}" target="_blank" rel="noopener noreferrer">Open posting</a>
+      ${
+        isExtensionAtsUrl(job.url)
+          ? `<a class="btn secondary" id="detailAssistFillLink" href="${buildAssistUrl(job.url, job.id)}" target="_blank" rel="noopener noreferrer">Browser assist fill</a>`
+          : ""
+      }
       <button class="btn secondary" data-status="reviewing">Mark reviewing</button>
       <button class="btn primary" data-status="applied">Mark applied</button>
       <button class="btn secondary" data-status="interview">Mark interview</button>
@@ -557,19 +694,26 @@ function renderJobDetail() {
     });
   }
 
-  const assistFillBtn = document.getElementById("assistFillBtn");
-  if (assistFillBtn) {
-    assistFillBtn.addEventListener("click", async () => {
-      assistFillBtn.disabled = true;
-      try {
-        const result = await api(`/jobs/${job.id}/apply/assist`, { method: "POST" });
-        window.open(result.url, "_blank", "noopener,noreferrer");
-        searchMessage.textContent = result.message;
-      } catch (error) {
-        alert(error.message);
-      } finally {
-        assistFillBtn.disabled = false;
-      }
+  const assistFillLink = document.getElementById("assistFillLink");
+  const detailAssistFillLink = document.getElementById("detailAssistFillLink");
+  const assistFillHintLink = document.getElementById("assistFillHintLink");
+  [assistFillLink, detailAssistFillLink, assistFillHintLink].forEach((link) => {
+    if (!link) return;
+    link.addEventListener("click", () => {
+      api(`/jobs/${job.id}/apply/assist`, { method: "POST" })
+        .then((result) => {
+          searchMessage.textContent = result.message;
+        })
+        .catch((error) => {
+          searchMessage.textContent = `Opened posting. ${error.message}`;
+        });
+    });
+  });
+
+  const autoFillHintBtn = document.getElementById("autoFillHintBtn");
+  if (autoFillHintBtn) {
+    autoFillHintBtn.addEventListener("click", () => {
+      document.getElementById("autoFillBtn")?.click();
     });
   }
 
@@ -587,7 +731,11 @@ function renderJobDetail() {
           method: "POST",
           body: JSON.stringify({ confirmed: true, submit: false }),
         });
-        searchMessage.textContent = `${result.message} Fields: ${result.filled_fields.join(", ")}`;
+        let message = `${result.message} Fields: ${result.filled_fields.join(", ")}`;
+        if (result.screenshot_path) {
+          message += ` Screenshot: /api/jobs/${job.id}/apply/screenshot`;
+        }
+        searchMessage.innerHTML = message;
         await loadJobs();
       } catch (error) {
         alert(error.message);
@@ -612,7 +760,11 @@ function renderJobDetail() {
           method: "POST",
           body: JSON.stringify({ confirmed: true, submit: true }),
         });
-        searchMessage.textContent = result.message;
+        let message = result.message;
+        if (result.screenshot_path) {
+          message += ` Screenshot: /api/jobs/${job.id}/apply/screenshot`;
+        }
+        searchMessage.innerHTML = message;
         await loadJobs();
       } catch (error) {
         alert(error.message);
@@ -788,6 +940,7 @@ function getSearchPayload() {
 
 async function loadApplyProfile() {
   const profile = await api("/profile/apply");
+  applyProfileCache = profile;
   fillApplyProfileForm(profile);
 }
 
@@ -803,6 +956,7 @@ function fillApplyProfileForm(profile, statusMessage = null) {
 
   const settings = profile.settings || {};
   document.getElementById("applyAutoEnabled").checked = Boolean(settings.auto_apply_enabled);
+  document.getElementById("applyMinConfidence").value = settings.min_auto_confidence ?? 85;
   document.getElementById("applyAlwaysConfirm").checked = settings.always_confirm_submit !== false;
 
   const container = document.getElementById("savedAnswersList");
@@ -845,7 +999,7 @@ function getApplyProfilePayload() {
     saved_answers: savedAnswers,
     settings: {
       auto_apply_enabled: document.getElementById("applyAutoEnabled").checked,
-      min_auto_confidence: 85,
+      min_auto_confidence: Number(document.getElementById("applyMinConfidence").value) || 85,
       always_confirm_submit: document.getElementById("applyAlwaysConfirm").checked,
     },
   };
@@ -856,8 +1010,12 @@ async function saveApplyProfile() {
     method: "PUT",
     body: JSON.stringify(getApplyProfilePayload()),
   });
+  applyProfileCache = profile;
   fillApplyProfileForm(profile);
   document.getElementById("applyProfileMessage").textContent = "Apply profile saved.";
+  if (selectedJobId) {
+    renderJobDetail();
+  }
 }
 
 async function loadProfile() {
@@ -1258,6 +1416,25 @@ document.querySelectorAll(".nav-btn").forEach((button) => {
 loadProfile()
   .then(() => loadApplyProfile())
   .then(() => Promise.all([loadJobs(), loadCompanies()]))
+  .then(() => initPipelineResizer())
   .catch((error) => {
     searchMessage.textContent = `Failed to load app: ${error.message}`;
   });
+
+const sidebarAssistHint = document.getElementById("sidebarAssistHint");
+if (sidebarAssistHint) {
+  sidebarAssistHint.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (!selectedJobId) {
+      searchMessage.textContent = "Select a Greenhouse or Lever job from the pipeline first.";
+      return;
+    }
+    const link = document.getElementById("assistFillLink") || document.getElementById("detailAssistFillLink");
+    if (link) {
+      link.click();
+      jobDetail.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    searchMessage.textContent = "Browser assist fill needs a Greenhouse or Lever posting URL.";
+  });
+}

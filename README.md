@@ -12,19 +12,19 @@ Personal MVP for tracking VP / Senior Director semiconductor job search.
 - Stores jobs in a local SQLite database (`data/jobs.db`)
 - Tracks status: new, reviewing, applied, interview, offer, rejected, passed, withdrawn
 - Provides a web UI for pipeline management, notes, and timeline history
+- **Phase 2:** Chrome extension for in-browser fill on Greenhouse and Lever
+- **Phase 3:** Playwright auto-fill and optional auto-submit locally
 
 ## Quick start
 
 1. Open PowerShell in `I:\jobsearch`
-2. Create a virtual environment and install dependencies:
+2. Start the app (creates venv, installs dependencies, and Playwright Chromium):
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+.\start.ps1
 ```
 
-1. Optional: configure job search API keys
+3. Optional: configure job search API keys
 
 ```powershell
 Copy-Item .env.example .env
@@ -46,13 +46,35 @@ OPENAI_MODEL=gpt-4o-mini
 
 Without OpenAI, resume upload still works using basic keyword extraction.
 
-1. Start the app:
+4. Open [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
-```powershell
-.\start.ps1
-```
+## Apply workflows
 
-1. Open [http://127.0.0.1:8000](http://127.0.0.1:8000)
+### Manual apply (default)
+
+1. Select a job → **Analyze fit** → **Prepare to apply**
+2. Open the posting, copy materials from the apply kit, submit on the company site
+3. Click **I submitted — mark applied**
+
+### Phase 2: Chrome extension (browser assist)
+
+See [extension/README.md](extension/README.md) for full install steps.
+
+1. Load unpacked extension from `extension/` in `chrome://extensions`
+2. In Career Agent, click **Browser assist fill** on a Greenhouse or Lever job
+3. On the posting, click **Fill from Career Agent**
+4. Review and submit manually
+
+### Phase 3: Playwright (local auto-fill)
+
+Requires Chromium installed by `start.ps1` (`playwright install chromium`).
+
+1. Complete your **Apply profile** (email required)
+2. On a Greenhouse or Lever job with sufficient confidence:
+   - **Auto-fill form (no submit)** — opens a visible browser, fills fields, leaves the window open for review
+   - **Auto-apply (submit)** — fills and submits (enable in Apply profile + meet minimum confidence)
+
+Screenshots are saved under `data/apply_screenshots/` and viewable at `/api/jobs/{id}/apply/screenshot`.
 
 ## Usage
 
@@ -67,7 +89,8 @@ Without OpenAI, resume upload still works using basic keyword extraction.
 
 ## Notes
 
-- Auto-apply is intentionally not included in MVP because each employer ATS differs.
+- Auto-submit only runs when enabled in Apply profile and confidence meets your threshold.
+- Greenhouse and Lever are supported for assist fill and Playwright; other ATS types use manual apply.
 - Use **Mark applied** after you submit an application.
 - Without Adzuna keys, manual tracking still works fully.
 
@@ -76,6 +99,16 @@ Without OpenAI, resume upload still works using basic keyword extraction.
 - `GET /api/jobs`
 - `POST /api/jobs`
 - `POST /api/jobs/{id}/status`
+- `POST /api/jobs/{id}/fit`
+- `POST /api/jobs/{id}/description/enrich`
+- `GET /api/jobs/{id}/apply`
+- `POST /api/jobs/{id}/apply/prepare`
+- `POST /api/jobs/{id}/apply/assist`
+- `POST /api/jobs/{id}/apply/auto`
+- `POST /api/jobs/{id}/apply/complete`
+- `GET /api/jobs/{id}/apply/screenshot`
+- `GET /api/apply/match?url=`
+- `GET/PUT /api/profile/apply`
 - `GET /api/profile`
 - `PUT /api/profile`
 - `POST /api/profile/resume`
@@ -87,4 +120,3 @@ Without OpenAI, resume upload still works using basic keyword extraction.
 - `DELETE /api/companies/{id}`
 - `POST /api/agent/company-search`
 - `GET /api/dashboard`
-
