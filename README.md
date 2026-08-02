@@ -1,14 +1,15 @@
 # Career Agent
 
-Personal MVP for tracking VP / Senior Director semiconductor job search.
+**Drop in your resume. Get matched to jobs. Apply and track — all in one place.**
+
+Career Agent reads your resume, finds roles that fit, helps you apply, and keeps your whole pipeline organized. Works for any role, any industry — it tailors the search to *you*.
 
 ## What it does
 
-- Upload your resume to generate tailored job search criteria with AI
-- Edit and save search profile (titles, keywords, skills, locations, exclusions)
-- Runs a search agent for executive semiconductor roles using your profile
-- Scans target company career pages (Greenhouse, Lever, and Workday)
-- Pre-seeds semiconductor target companies (Waymo, Tenstorrent, NVIDIA, Intel, etc.)
+- Upload your resume — AI turns it into tailored search criteria (titles, keywords, skills, locations, exclusions)
+- Edit and save your search profile any time
+- Runs a search agent that finds matching roles from job boards and company career pages (Greenhouse, Lever, and Workday)
+- Add your own target companies, or start from a built-in seed list
 - Stores jobs in a local SQLite database (`data/jobs.db`)
 - Tracks status: new, reviewing, applied, interview, offer, rejected, passed, withdrawn
 - Provides a web UI for pipeline management, notes, and timeline history
