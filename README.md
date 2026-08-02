@@ -76,6 +76,59 @@ Requires Chromium installed by `start.ps1` (`playwright install chromium`).
 
 Screenshots are saved under `data/apply_screenshots/` and viewable at `/api/jobs/{id}/apply/screenshot`.
 
+## Which ATS types support auto-apply?
+
+Career Agent classifies each job from the **URL stored on the job record** (not where you eventually applied in the browser).
+
+| ATS | Example URL | Browser extension (Phase 2) | Playwright auto-fill (Phase 3) | Auto-submit |
+|-----|-------------|----------------------------|--------------------------------|-------------|
+| **Greenhouse** | `boards.greenhouse.io/...` | Yes | Yes | Yes (with settings) |
+| **Lever** | `jobs.lever.co/...` | Yes | Yes | Yes (with settings) |
+| **Workday** | `*.wd5.myworkdayjobs.com/...` | No | No | No |
+| **LinkedIn / Indeed** | `linkedin.com/jobs/...` | No | No | No |
+| **Adzuna aggregator** | `adzuna.com/...` | No | No | No |
+| **Other / unknown** | Company custom sites | No | No | No |
+
+Workday (used by HP, Intel, NVIDIA, and many large employers) is **manual apply only** for now. Workday forms often require login, long custom question sets, and heavy JavaScript — automation is unreliable compared to Greenhouse and Lever.
+
+### Why auto-apply may be missing (even with a saved Apply profile)
+
+Auto-apply is **not** blocked by saving your profile alone. It is blocked when:
+
+1. **The stored job URL is not Greenhouse or Lever** — jobs imported from Adzuna usually link to an aggregator or redirect, not the company ATS.
+2. **The job is Workday** — detected from `myworkdayjobs.com` URLs; manual apply with the apply kit is the supported path.
+3. **The URL is a careers home page, not a job posting** — e.g. `.../userHome` will not work; use the direct requisition link (`/job/...`).
+4. **Apply profile is missing email** — required for Playwright fill.
+
+Saving name, email, and other Apply profile fields is necessary but not sufficient if the job URL points to the wrong ATS.
+
+### Example: HP role applied on Workday
+
+You might have a pipeline entry like:
+
+- **Title:** Vice President, CTO Operations  
+- **Company:** HP Inc.  
+- **Source:** adzuna  
+- **Applied manually at:** `https://hp.wd5.myworkdayjobs.com/en-US/ExternalCareerSite/...`
+
+In that case auto-apply would not appear because:
+
+- The tracker job likely still has an **Adzuna URL** (classified as unsupported), and/or
+- HP’s application site is **Workday**, which is outside Phase 2 and Phase 3 support.
+
+**Recommended workflow for Workday roles:**
+
+1. Find the real Workday job posting URL (not Adzuna, not the careers home page).
+2. Update the job in Career Agent with that URL (optional, improves ATS detection and description fetch).
+3. **Prepare to apply** — generate cover letter and tailored answers.
+4. Apply manually on the company site.
+5. Click **I submitted — mark applied**.
+
+### Adzuna and target-company search
+
+- **Adzuna search** imports jobs with Adzuna links. Use **Open posting**, find the company’s real application page, and optionally **edit the job URL** to the Greenhouse, Lever, or Workday posting if you want correct ATS detection.
+- **Target company search** can import from Greenhouse, Lever, and Workday career pages directly; Greenhouse and Lever imports are the best candidates for browser assist and auto-fill.
+
 ## Usage
 
 - **Upload resume**: AI extracts titles, keywords, skills, locations, and exclusions
@@ -89,8 +142,9 @@ Screenshots are saved under `data/apply_screenshots/` and viewable at `/api/jobs
 
 ## Notes
 
-- Auto-submit only runs when enabled in Apply profile and confidence meets your threshold.
-- Greenhouse and Lever are supported for assist fill and Playwright; other ATS types use manual apply.
+- Auto-submit only runs when enabled in Apply profile, confidence meets your threshold, and the job URL is Greenhouse or Lever.
+- Phase 2 (extension) and Phase 3 (Playwright) support **Greenhouse and Lever only**. Workday, LinkedIn, Indeed, Adzuna links, and custom sites use **manual apply** with the apply kit.
+- The apply panel shows specific reasons per job (ATS type, missing description, profile gaps).
 - Use **Mark applied** after you submit an application.
 - Without Adzuna keys, manual tracking still works fully.
 
