@@ -7,11 +7,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .database import Base, SessionLocal, engine
+from .models import User
 from .routes import router
 from .services.companies import ensure_target_company_schema, seed_default_companies
 from .services.apply_schema import ensure_apply_schema
 from .services.job_description_schema import ensure_job_description_schema
 from .services.job_fit import ensure_job_fit_schema
+from .services.job_schema import ensure_job_dedup_schema
+from .services.user_schema import ensure_user_schema
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 
@@ -23,9 +26,12 @@ async def lifespan(_: FastAPI):
     ensure_job_fit_schema()
     ensure_apply_schema()
     ensure_job_description_schema()
+    ensure_user_schema()
+    ensure_job_dedup_schema()
     db = SessionLocal()
     try:
-        seed_default_companies(db)
+        for user in db.query(User).all():
+            seed_default_companies(db, user.id)
     finally:
         db.close()
     yield

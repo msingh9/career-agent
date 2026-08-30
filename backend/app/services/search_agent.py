@@ -356,21 +356,31 @@ def _format_salary(min_salary, max_salary) -> str | None:
 def upsert_job(
     db: Session,
     payload: dict,
+    user_id: int,
     note: str = "Discovered by search agent",
 ) -> tuple[Job | None, bool]:
     url = payload.get("url", "").strip()
     if not url:
         return None, False
 
-    existing = db.query(Job).filter(Job.url == url).one_or_none()
+    from .url_canonical import canonical_job_url
+
+    canonical = canonical_job_url(url)
+    existing = (
+        db.query(Job)
+        .filter(Job.user_id == user_id, Job.canonical_url == canonical)
+        .first()
+    )
     if existing:
         return existing, False
 
     job = Job(
+        user_id=user_id,
         title=payload.get("title") or "Unknown title",
         company=payload.get("company") or "Unknown company",
         location=payload.get("location"),
         url=url,
+        canonical_url=canonical,
         source=payload.get("source") or "manual",
         description=payload.get("description"),
         salary=payload.get("salary"),
@@ -418,6 +428,7 @@ async def _execute_search_batches(
 
 async def run_job_search(
     db: Session,
+    user_id: int,
     titles: list[str] | None = None,
     keywords: list[str] | None = None,
     locations: list[str] | None = None,
@@ -430,7 +441,11 @@ async def run_job_search(
     titles, keywords, locations = default_search_params(titles, keywords, locations)
     queries = build_search_queries(titles, keywords, skills, industries, seniority)
     exclude_keywords = exclude_keywords or []
-    from .profile_match import job_matches_profile
+    from .profile_match import job_match_score, strictness_to_threshold
+    from .profile import get_or_create_profile
+
+    strictness = get_or_create_profile(db, user_id).match_strictness or 5
+    threshold = strictness_to_threshold(strictness)
 
     if not settings.adzuna_app_id or not settings.adzuna_app_key:
         return {
@@ -506,10 +521,10 @@ async def run_job_search(
         if should_exclude_job(payload, exclude_keywords):
             excluded += 1
             continue
-        if not job_matches_profile(payload, titles, keywords, skills, seniority):
+        if job_match_score(payload, titles, keywords, skills, industries, seniority, exclude_keywords) < threshold:
             profile_filtered += 1
             continue
-        _, created = upsert_job(db, payload)
+        _, created = upsert_job(db, payload, user_id)
         if created:
             added += 1
         else:
@@ -528,15 +543,20 @@ async def run_job_search(
             message += f" ({errors} API requests failed.)"
         return {"found": 0, "added": 0, "skipped": 0, "message": message}
 
-    if added == 0 and found > 0 and locations:
-        message = (
-            f"Found {found} jobs from Adzuna, but none matched your location filter "
-            f"({', '.join(locations)})."
-        )
-        if remote_filtered:
-            message += f" {remote_filtered} remote listings were excluded."
+    if added == 0 and found > 0:
+        message = f"Found {found} jobs from Adzuna but added none."
+        reasons = []
+        if profile_filtered:
+            reasons.append(f"{profile_filtered} below match strictness ({strictness}/10)")
         if location_filtered:
-            message += f" {location_filtered} were outside your preferred locations."
+            reasons.append(f"{location_filtered} outside your locations ({', '.join(locations)})")
+        if remote_filtered:
+            reasons.append(f"{remote_filtered} remote-excluded")
+        if excluded:
+            reasons.append(f"{excluded} by exclude-keywords")
+        if reasons:
+            message += " Filtered: " + "; ".join(reasons) + "."
+        message += " Try lowering match strictness or broadening keywords/locations."
         if errors:
             message += f" ({errors} API requests failed.)"
         return {"found": found, "added": 0, "skipped": 0, "message": message}
@@ -552,7 +572,7 @@ async def run_job_search(
     if excluded:
         message += f" Excluded {excluded} by keyword filters."
     if profile_filtered:
-        message += f" Skipped {profile_filtered} non-matching titles."
+        message += f" Filtered {profile_filtered} below your match strictness ({strictness}/10)."
     if locations:
         message += f" Showing jobs matching: {', '.join(locations)}."
     if errors:

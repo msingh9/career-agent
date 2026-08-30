@@ -2,7 +2,16 @@ import enum
 import json
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -35,14 +44,28 @@ class ApplyAttemptStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+
 class Job(Base):
     __tablename__ = "jobs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), index=True
+    )
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     company: Mapped[str] = mapped_column(String(300), nullable=False)
     location: Mapped[str | None] = mapped_column(String(300))
-    url: Mapped[str] = mapped_column(String(1000), unique=True, nullable=False)
+    url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    canonical_url: Mapped[str | None] = mapped_column(String(1000), index=True)
     source: Mapped[str] = mapped_column(String(100), default="manual")
     description: Mapped[str | None] = mapped_column(Text)
     description_summary: Mapped[str | None] = mapped_column(Text)
@@ -71,6 +94,10 @@ class Job(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "url", name="uq_jobs_user_url"),
     )
 
     events: Mapped[list["JobEvent"]] = relationship(
@@ -142,7 +169,10 @@ class ApplyAttempt(Base):
 class SearchProfile(Base):
     __tablename__ = "search_profiles"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), unique=True, index=True
+    )
     titles: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     keywords: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     locations: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
@@ -150,6 +180,7 @@ class SearchProfile(Base):
     industries: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     seniority: Mapped[str | None] = mapped_column(String(200))
     exclude_keywords: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    match_strictness: Mapped[int] = mapped_column(Integer, default=5, server_default="5", nullable=False)
     summary: Mapped[str | None] = mapped_column(Text)
     resume_filename: Mapped[str | None] = mapped_column(String(500))
     resume_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -203,6 +234,9 @@ class TargetCompany(Base):
     __tablename__ = "target_companies"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), index=True
+    )
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     careers_url: Mapped[str] = mapped_column(String(1000), nullable=False)
     ats_type: Mapped[str] = mapped_column(String(50), default="unsupported", nullable=False)

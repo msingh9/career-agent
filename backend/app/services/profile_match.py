@@ -1,6 +1,6 @@
 import re
 
-from .search_agent import simplify_titles_for_search
+from .search_agent import should_exclude_job, simplify_titles_for_search
 
 EXECUTIVE_PATTERNS = [
     re.compile(r"\bvp\b", re.I),
@@ -98,3 +98,52 @@ def job_matches_profile(
         return any(term in haystack for term in terms)
 
     return True
+
+
+def strictness_to_threshold(strictness: int) -> int:
+    """Map a 1–10 match-strictness dial to a 0–100 score threshold.
+
+    1 (relaxed) ≈ 8 · 5 (default) ≈ 40 · 10 (only best matches) ≈ 80.
+    """
+    try:
+        s = int(strictness)
+    except (TypeError, ValueError):
+        s = 5
+    s = max(1, min(10, s))
+    return s * 8
+
+
+def job_match_score(
+    payload: dict,
+    titles: list[str] | None,
+    keywords: list[str] | None,
+    skills: list[str] | None,
+    industries: list[str] | None,
+    seniority: str | None,
+    exclude_keywords: list[str] | None = None,
+) -> int:
+    """Graded 0–100 match of a job against resume-derived criteria.
+
+    Title/seniority alignment contributes up to 45; keyword/skill/industry
+    overlap up to 55 (each hit +12, capped). Excluded terms hard-fail to 0.
+    """
+    if exclude_keywords and should_exclude_job(payload, exclude_keywords):
+        return 0
+
+    title = payload.get("title") or ""
+    haystack = f"{title} {payload.get('description') or ''}".lower()
+
+    # Title/seniority alignment is the dominant signal (up to 55). A genuine
+    # director+ title should clear the mid dial on its own; keyword overlap
+    # (each hit +15, capped 45) pushes it into the strict range.
+    title_score = 55 if is_executive_title(title, titles, seniority) else 0
+
+    terms = {
+        term.strip().lower()
+        for term in (keywords or []) + (skills or []) + (industries or [])
+        if len(term.strip()) > 2
+    }
+    matched = sum(1 for term in terms if term in haystack)
+    keyword_score = min(45, matched * 15)
+
+    return title_score + keyword_score

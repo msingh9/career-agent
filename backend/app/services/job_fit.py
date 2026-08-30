@@ -338,12 +338,12 @@ def _save_fit_analysis(db: Session, job: Job, analysis: FitAnalysis) -> JobFitRe
     )
 
 
-def analyze_job_fit(db: Session, job_id: int) -> JobFitResult:
-    job = db.query(Job).filter(Job.id == job_id).one_or_none()
+def analyze_job_fit(db: Session, job_id: int, user_id: int) -> JobFitResult:
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
     if not job:
         raise ValueError("Job not found.")
 
-    profile_row = get_or_create_profile(db)
+    profile_row = get_or_create_profile(db, user_id)
     profile = _profile_context(profile_row)
     resume_text = load_stored_resume_text(profile_row)
 

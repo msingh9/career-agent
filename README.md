@@ -6,15 +6,16 @@ Career Agent reads your resume, finds roles that fit, helps you apply, and keeps
 
 ## What it does
 
-- Upload your resume — AI turns it into tailored search criteria (titles, keywords, skills, locations, exclusions)
-- Edit and save your search profile any time
-- Runs a search agent that finds matching roles from job boards and company career pages (Greenhouse, Lever, and Workday)
-- Add your own target companies, or start from a built-in seed list
-- Stores jobs in a local SQLite database (`data/jobs.db`)
-- Tracks status: new, reviewing, applied, interview, offer, rejected, passed, withdrawn
-- Provides a web UI for pipeline management, notes, and timeline history
-- **Phase 2:** Chrome extension for in-browser fill on Greenhouse and Lever
-- **Phase 3:** Playwright auto-fill and optional auto-submit locally
+- **Chat-first UI** — a ChatGPT-style interface: tell the agent to "search jobs from my resume", "search company X", or "ignore jobs that aren't senior", and it does it (destructive actions ask to confirm).
+- **Named profiles (multi-user)** — Netflix-style profiles, each with its own resume, jobs, target companies, and settings. No passwords.
+- **Resume digest** — on upload, AI turns your resume into tailored search criteria (titles, keywords, skills, industries, exclusions). Uses a stronger model for this one-time step (configurable).
+- **Match strictness (1–10)** — a dial that controls how closely jobs must match your resume before they're added (1 = more jobs, 10 = only the best).
+- **Search agent** — finds matching roles from job boards (Adzuna) and company career pages (Greenhouse, Lever, Workday); de-duplicates by canonical URL so the same posting is never added twice.
+- **Jobs view** — clean list with per-row **Auto-fill** and **Ignore**; click any job for a detail modal (fit, apply, status, notes).
+- Tracks status: new, reviewing, applied, interview, offer, rejected, passed, withdrawn; stores everything in a local SQLite DB (`data/jobs.db`).
+- **Agentic apply** — drives your real Chrome to follow a posting link through redirects to the actual application form and fill it from your profile (any ATS), stopping before submit and at logins/CAPTCHAs.
+- **Chrome extension (optional)** — in-browser fill on Greenhouse and Lever.
+- **Playwright auto-fill (Greenhouse/Lever)** — deterministic fill/optional auto-submit for those two ATS.
 
 ## Quick start
 
@@ -42,12 +43,19 @@ Optional: enable AI resume analysis (highly recommended):
 
 ```
 OPENAI_API_KEY=your_openai_key
+# General agentic work (chat, fit, materials, summaries) — cheap/fast
 OPENAI_MODEL=gpt-4o-mini
+# Resume digestion only (run once per resume upload) — a stronger model
+OPENAI_DIGEST_MODEL=gpt-5.2
 ```
 
 Without OpenAI, resume upload still works using basic keyword extraction.
 
-4. Open [http://127.0.0.1:8000](http://127.0.0.1:8000)
+4. Open [http://127.0.0.1:8000](http://127.0.0.1:8000) and pick or create a profile.
+
+### Profiles (multi-user)
+
+On first load you'll see a "Who's searching?" picker. Create a profile (just a name — no password) or pick an existing one. Each profile keeps its own resume, jobs, target companies, and settings, fully isolated. Switch or add profiles anytime from the top-bar profile menu.
 
 ## Apply workflows
 
@@ -56,6 +64,21 @@ Without OpenAI, resume upload still works using basic keyword extraction.
 1. Select a job → **Analyze fit** → **Prepare to apply**
 2. Open the posting, copy materials from the apply kit, submit on the company site
 3. Click **I submitted — mark applied**
+
+### Agentic apply (any ATS — recommended)
+
+Drives your **real Chrome** to follow a posting link through redirects/aggregators to the actual application form and fill it from your profile — works on any ATS (SmartRecruiters, Workday, Greenhouse, Lever, custom). It **never submits**, stops at logins/CAPTCHAs, and leaves the tab open for your review.
+
+1. Start the debug Chrome (classic remote debugging on port 9333, separate from normal Chrome):
+
+   ```powershell
+   .\start-chrome-debug.ps1
+   ```
+
+2. Set `CHROME_CDP_URL=http://127.0.0.1:9333` in `backend/.env` (default). First time, log into any job sites in that Chrome window.
+3. In the Jobs view click **Auto-fill** on any job (or **Agentic apply** in the job modal). Review the filled form in Chrome and submit yourself.
+
+> Field mapping uses keyword heuristics plus an OpenAI fallback; the resume is uploaded to the form when the site supports it.
 
 ### Phase 2: Chrome extension (browser assist)
 
@@ -76,6 +99,29 @@ Requires Chromium installed by `start.ps1` (`playwright install chromium`).
    - **Auto-apply (submit)** — fills and submits (enable in Apply profile + meet minimum confidence)
 
 Screenshots are saved under `data/apply_screenshots/` and viewable at `/api/jobs/{id}/apply/screenshot`.
+
+#### Apply in your real Google Chrome (optional)
+
+By default Playwright launches a throwaway Chromium. To auto-apply in your **own Chrome**
+instead — reusing your logged-in sessions (LinkedIn, Greenhouse, Lever) — run it with
+classic remote debugging and point the app at it:
+
+1. Start the debug Chrome (dedicated profile on port 9333, separate from your normal Chrome):
+
+   ```powershell
+   .\start-chrome-debug.ps1
+   ```
+
+2. Set `CHROME_CDP_URL=http://127.0.0.1:9333` in `backend/.env` (already set by default).
+3. The first time, log into any job sites in that Chrome window; logins persist in its profile.
+4. Use **Auto-fill** / **Auto-apply** as usual — the form opens in that real Chrome as a new tab,
+   which is left open for you. The app never closes your browser.
+
+Leave `CHROME_CDP_URL` blank to fall back to the throwaway-Chromium behavior.
+
+> Note: this classic-debug Chrome is **separate** from the `chrome-devtools-mcp` "Remote debugging"
+> toggle (port 9222). That toggle is a secured endpoint only the MCP can attach to; Playwright needs
+> the classic protocol this script starts.
 
 ## Which ATS types support auto-apply?
 
@@ -151,6 +197,10 @@ In that case auto-apply would not appear because:
 
 ## API
 
+All data endpoints are scoped to the active profile via an **`X-User-Id`** request header.
+
+- `GET /api/users` · `POST /api/users` · `DELETE /api/users/{id}` — profiles
+- `POST /api/agent/chat` — chat brain (search / company-search / filter / ignore)
 - `GET /api/jobs`
 - `POST /api/jobs`
 - `POST /api/jobs/{id}/status`
@@ -159,7 +209,8 @@ In that case auto-apply would not appear because:
 - `GET /api/jobs/{id}/apply`
 - `POST /api/jobs/{id}/apply/prepare`
 - `POST /api/jobs/{id}/apply/assist`
-- `POST /api/jobs/{id}/apply/auto`
+- `POST /api/jobs/{id}/apply/auto` — Greenhouse/Lever Playwright fill
+- `POST /api/jobs/{id}/apply/agentic` — agentic apply (any ATS, real Chrome)
 - `POST /api/jobs/{id}/apply/complete`
 - `GET /api/jobs/{id}/apply/screenshot`
 - `GET /api/apply/match?url=`

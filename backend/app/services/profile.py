@@ -24,13 +24,15 @@ def default_profile_data() -> SearchProfileData:
     )
 
 
-def get_or_create_profile(db: Session) -> SearchProfile:
-    profile = db.query(SearchProfile).filter(SearchProfile.id == 1).one_or_none()
+def get_or_create_profile(db: Session, user_id: int) -> SearchProfile:
+    profile = (
+        db.query(SearchProfile).filter(SearchProfile.user_id == user_id).one_or_none()
+    )
     if profile:
         return profile
 
     defaults = default_profile_data()
-    profile = SearchProfile(id=1)
+    profile = SearchProfile(user_id=user_id)
     profile.set_list("titles", defaults.titles)
     profile.set_list("keywords", defaults.keywords)
     profile.set_list("locations", defaults.locations)
@@ -59,6 +61,7 @@ def profile_to_read(profile: SearchProfile) -> SearchProfileRead:
         resume_uploaded_at=profile.resume_uploaded_at,
         updated_at=profile.updated_at,
         has_openai=bool(settings.openai_api_key),
+        match_strictness=getattr(profile, "match_strictness", 5) or 5,
     )
 
 

@@ -34,11 +34,14 @@ def _normalize_url(url: str) -> str:
     return f"{parsed.netloc.lower()}{path}".lower()
 
 
-def find_job_by_url(db_session, url: str) -> Job | None:
+def find_job_by_url(db_session, url: str, user_id: int | None = None) -> Job | None:
     from ..models import Job
 
     target = _normalize_url(url)
-    jobs = db_session.query(Job).all()
+    query = db_session.query(Job)
+    if user_id is not None:
+        query = query.filter(Job.user_id == user_id)
+    jobs = query.all()
     for job in jobs:
         if _normalize_url(job.url) == target:
             return job

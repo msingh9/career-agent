@@ -14,7 +14,12 @@ def add_status_event(db: Session, job: Job, status: JobStatus, note: str | None 
 
 
 def job_to_read(job: Job) -> JobRead:
+    from .apply_feasibility import _detect_ats_from_url
+
+    ats_type, _ = _detect_ats_from_url(job.url)
     return JobRead(
+        ats_type=ats_type,
+        auto_apply_supported=ats_type in {"greenhouse", "lever"},
         id=job.id,
         title=job.title,
         company=job.company,

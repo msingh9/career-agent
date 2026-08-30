@@ -231,7 +231,7 @@ def extract_profile_from_resume(resume_text: str) -> tuple[SearchProfileData, st
         try:
             client = OpenAI(api_key=settings.openai_api_key)
             response = client.chat.completions.create(
-                model=settings.openai_model,
+                model=settings.openai_digest_model,
                 temperature=0.2,
                 response_format={"type": "json_object"},
                 messages=[

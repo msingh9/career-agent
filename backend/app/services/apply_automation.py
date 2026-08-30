@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..config import settings
 from ..database import DATA_DIR, RESUMES_DIR
 from ..models import Job, SearchProfile
 from ..schemas_apply import ApplyFillPayload
@@ -219,9 +220,32 @@ def run_apply_automation(
     keep_browser_open = not submit
     visible_browser = keep_browser_open or not headless
 
+    cdp_url = (settings.chrome_cdp_url or "").strip()
+    use_cdp = bool(cdp_url)
+
     playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=not visible_browser)
-    page = browser.new_page()
+    # owns_browser: True only when we launched Chromium ourselves. In CDP mode we
+    # attach to the user's real Chrome and must never close it or their tabs.
+    owns_browser = False
+    if use_cdp:
+        try:
+            browser = playwright.chromium.connect_over_cdp(cdp_url)
+        except Exception as exc:
+            playwright.stop()
+            return AutomationResult(
+                success=False,
+                status="failed",
+                message=(
+                    f"Could not connect to Chrome at {cdp_url}. Make sure Chrome is "
+                    f"running with remote debugging enabled. ({exc})"
+                ),
+            )
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = context.new_page()
+    else:
+        browser = playwright.chromium.launch(headless=not visible_browser)
+        owns_browser = True
+        page = browser.new_page()
     try:
         page.goto(job.url, wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(1500)
@@ -281,6 +305,13 @@ def run_apply_automation(
             screenshot_path=str(screenshot_path) if screenshot_path else None,
         )
     finally:
-        if not keep_browser_open:
-            browser.close()
+        if owns_browser:
+            # We launched this Chromium ourselves; close it unless the user
+            # asked to keep it open to review the filled form.
+            if not keep_browser_open:
+                browser.close()
+                playwright.stop()
+        else:
+            # CDP mode: never close the user's real Chrome or the new tab.
+            # Just disconnect our Playwright client — the filled tab stays open.
             playwright.stop()

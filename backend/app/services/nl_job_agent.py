@@ -50,6 +50,8 @@ Allowed actions:
 - delete: permanently remove matching jobs
 - update: change fields on matching jobs
 - ignore: set status to "ignored" (preferred when user says hide/ignore/dismiss)
+- search: run a new job search from the user's saved resume/profile criteria (use when the user says find/search jobs based on my resume/profile)
+- company_search: search a specific company's careers page for roles (use when the user names a company to search, e.g. "search Nvidia", "find jobs at Stripe"). Put the company name in company_name. If the user includes a careers URL (greenhouse.io / lever.co / myworkdayjobs.com), put it in company_url.
 
 Status values: new, reviewing, applied, rejected, interview, offer, withdrawn, passed, ignored
 
@@ -58,8 +60,10 @@ Non-senior roles include intern, junior, associate, coordinator, analyst, specia
 
 Return JSON only:
 {
-  "action": "list|delete|update|ignore",
+  "action": "list|delete|update|ignore|search|company_search",
   "explanation": "plain English summary of what will happen",
+  "company_name": null,
+  "company_url": null,
   "filters": {
     "company_contains": [],
     "company_excludes": [],
@@ -80,7 +84,8 @@ Return JSON only:
 }
 
 Rules:
-- Use company_contains for employer names (e.g. NVIDIA -> ["nvidia"])
+- Use company_contains for employer names when filtering EXISTING jobs (e.g. "ignore NVIDIA jobs" -> filters.company_contains ["nvidia"])
+- Use company_search (not company_contains) when the user wants to FIND/SEARCH a company's new postings
 - Use ignore action when user says ignore/hide/dismiss; use delete only for remove/delete
 - For "not senior executive" set non_senior_only true and/or title_excludes with senior terms
 - For "senior executive only" set senior_executive_only true
@@ -139,8 +144,8 @@ def _apply_filters(query, filters: JobQueryFilters):
     return query
 
 
-def build_jobs_query(db: Session, filters: JobQueryFilters):
-    return _apply_filters(db.query(Job), filters)
+def build_jobs_query(db: Session, filters: JobQueryFilters, user_id: int):
+    return _apply_filters(db.query(Job).filter(Job.user_id == user_id), filters)
 
 
 def build_sql_preview(filters: JobQueryFilters, action: str, update: JobQueryUpdate | None) -> str:
@@ -187,12 +192,39 @@ def build_sql_preview(filters: JobQueryFilters, action: str, update: JobQueryUpd
 def _heuristic_plan(query: str) -> dict:
     lower = query.lower()
     action = "list"
+
+    url_match = re.search(r"https?://\S+", query)
+    company_url = url_match.group(0) if url_match else None
+
     if any(word in lower for word in ("delete", "remove", "drop")):
         action = "delete"
     elif any(word in lower for word in ("ignore", "hide", "dismiss")):
         action = "ignore"
     elif any(word in lower for word in ("mark", "set", "update")):
         action = "update"
+    elif any(word in lower for word in ("search", "find", "look for")):
+        # "search jobs from my resume" vs "search company X"
+        company_match = re.search(
+            r"(?:search|find|look for)\s+(?:jobs?\s+(?:at|from|for)\s+)?([a-z0-9 .&-]+?)"
+            r"(?:\s+careers?|\s+jobs?|\s+roles?|$)",
+            lower,
+        )
+        if company_url or ("company" in lower) or (
+            company_match and "resume" not in lower and "profile" not in lower
+            and company_match.group(1).strip() not in {"jobs", "job", "roles", "new jobs"}
+        ):
+            action = "company_search"
+        else:
+            action = "search"
+
+    company_name = None
+    if action == "company_search":
+        name_match = re.search(
+            r"(?:company|at|for)\s+([a-z0-9 .&-]+?)(?:\s+careers?|\s+jobs?|\s+roles?|\s+https?|$)",
+            lower,
+        )
+        if name_match:
+            company_name = name_match.group(1).strip()
 
     filters: dict = {
         "company_contains": [],
@@ -224,6 +256,8 @@ def _heuristic_plan(query: str) -> dict:
     return {
         "action": action,
         "explanation": "Heuristic plan from your request. Add OPENAI_API_KEY for smarter parsing.",
+        "company_name": company_name,
+        "company_url": company_url,
         "filters": filters,
         "update": update,
     }
@@ -253,9 +287,11 @@ def generate_plan_from_query(query: str) -> dict:
     return _heuristic_plan(trimmed)
 
 
-def normalize_plan_data(data: dict) -> tuple[str, str, JobQueryFilters, JobQueryUpdate | None]:
+def normalize_plan_data(
+    data: dict,
+) -> tuple[str, str, JobQueryFilters, JobQueryUpdate | None, str | None, str | None]:
     action = (data.get("action") or "list").strip().lower()
-    if action not in {"list", "delete", "update", "ignore"}:
+    if action not in {"list", "delete", "update", "ignore", "search", "company_search"}:
         action = "list"
 
     explanation = (data.get("explanation") or "Process matching jobs.").strip()
@@ -266,14 +302,36 @@ def normalize_plan_data(data: dict) -> tuple[str, str, JobQueryFilters, JobQuery
     if action == "ignore":
         update = JobQueryUpdate(status="ignored", notes_append=update.notes_append if update else None)
 
-    return action, explanation, filters, update
+    company_name = (data.get("company_name") or None)
+    if isinstance(company_name, str):
+        company_name = company_name.strip() or None
+    company_url = (data.get("company_url") or None)
+    if isinstance(company_url, str):
+        company_url = company_url.strip() or None
+
+    return action, explanation, filters, update, company_name, company_url
 
 
-def create_plan(db: Session, query: str) -> NLJobPlan:
+def create_plan(db: Session, query: str, user_id: int) -> NLJobPlan:
     raw = generate_plan_from_query(query)
-    action, explanation, filters, update = normalize_plan_data(raw)
+    action, explanation, filters, update, company_name, company_url = normalize_plan_data(raw)
 
-    jobs = build_jobs_query(db, filters).order_by(Job.updated_at.desc()).all()
+    # search / company_search do not filter existing jobs; skip the preview query.
+    if action in {"search", "company_search"}:
+        return NLJobPlan(
+            action=action,
+            explanation=explanation,
+            filters=filters,
+            update=update,
+            sql_preview="",
+            requires_confirmation=False,
+            affected_count=0,
+            preview_jobs=[],
+            company_name=company_name,
+            company_url=company_url,
+        )
+
+    jobs = build_jobs_query(db, filters, user_id).order_by(Job.updated_at.desc()).all()
     preview_jobs = [
         JobPreview(
             id=job.id,
@@ -298,14 +356,16 @@ def create_plan(db: Session, query: str) -> NLJobPlan:
         requires_confirmation=requires_confirmation,
         affected_count=len(jobs),
         preview_jobs=preview_jobs,
+        company_name=company_name,
+        company_url=company_url,
     )
 
 
-def execute_plan(db: Session, plan: NLJobPlan, confirmed: bool) -> tuple[int, str]:
+def execute_plan(db: Session, plan: NLJobPlan, confirmed: bool, user_id: int) -> tuple[int, str]:
     if plan.requires_confirmation and not confirmed:
         raise ValueError("Confirmation is required before running this action.")
 
-    jobs = build_jobs_query(db, plan.filters).all()
+    jobs = build_jobs_query(db, plan.filters, user_id).all()
     if not jobs:
         return 0, "No jobs matched your request."
 

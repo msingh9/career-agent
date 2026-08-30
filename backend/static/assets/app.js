@@ -1,1440 +1,773 @@
-const API = "/api";
+"use strict";
 
-const statusLabels = {
-  new: "New",
-  reviewing: "Reviewing",
-  applied: "Applied",
-  interview: "Interview",
-  offer: "Offer",
-  rejected: "Rejected",
-  passed: "Passed",
-  withdrawn: "Withdrawn",
-  ignored: "Ignored",
+/* ------------------------------------------------------------------ */
+/* State + helpers                                                      */
+/* ------------------------------------------------------------------ */
+const USER_KEY = "careerAgentUserId";
+const state = {
+  userId: null,
+  users: [],
+  profile: null,
+  jobs: [],
 };
 
-let jobs = [];
-let selectedJobId = null;
-let targetCompanies = [];
-let pendingNlPlan = null;
-let applyStatusCache = new Map();
-let applyProfileCache = null;
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-const applyModeLabels = {
-  manual_only: "Manual",
-  assisted: "Assisted",
-  auto_with_review: "Auto (review)",
-  auto: "Auto",
-};
-
-function buildAssistUrl(jobUrl, jobId) {
-  const separator = jobUrl.includes("?") ? "&" : "?";
-  return `${jobUrl}${separator}career_agent_job=${jobId}`;
+function getUserId() {
+  const raw = localStorage.getItem(USER_KEY);
+  return raw ? Number(raw) : null;
+}
+function setUserId(id) {
+  state.userId = id;
+  if (id) localStorage.setItem(USER_KEY, String(id));
+  else localStorage.removeItem(USER_KEY);
 }
 
-function isExtensionAts(atsType) {
-  return atsType === "greenhouse" || atsType === "lever";
+async function apiFetch(path, options = {}) {
+  const opts = { ...options };
+  opts.headers = { ...(options.headers || {}) };
+  if (state.userId) opts.headers["X-User-Id"] = String(state.userId);
+  if (opts.body && !(opts.body instanceof FormData) && !opts.headers["Content-Type"]) {
+    opts.headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch(`/api${path}`, opts);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = data.detail || detail;
+    } catch (_) {}
+    throw new Error(detail);
+  }
+  if (res.status === 204) return null;
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("application/json") ? res.json() : res.text();
 }
 
-function isExtensionAtsUrl(url) {
+function esc(str) {
+  return String(str ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+let toastTimer = null;
+function toast(msg, isError = false) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.classList.toggle("error", isError);
+  el.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add("hidden"), 3500);
+}
+
+/* ------------------------------------------------------------------ */
+/* Boot + profile gate                                                 */
+/* ------------------------------------------------------------------ */
+async function init() {
+  wireStaticHandlers();
   try {
-    const host = new URL(url).hostname.toLowerCase();
-    return host.includes("greenhouse.io") || host.includes("lever.co");
-  } catch (_error) {
-    return false;
+    state.users = await apiFetch("/users");
+  } catch (e) {
+    state.users = [];
+  }
+  const stored = getUserId();
+  const valid = stored && state.users.some((u) => u.id === stored);
+  if (valid) {
+    setUserId(stored);
+    await boot();
+  } else {
+    showGate();
   }
 }
 
-function hasApplyEmail() {
-  return Boolean(applyProfileCache?.identity?.email?.trim());
+function showGate() {
+  $("#appShell").classList.add("hidden");
+  $("#profileGate").classList.remove("hidden");
+  renderProfileGrid();
 }
 
-function canUseBrowserAssist(feasibility, job) {
-  return isExtensionAts(feasibility.ats_type) || isExtensionAtsUrl(job.url);
-}
-
-function canUseAutoFill(feasibility, job) {
-  return canUseBrowserAssist(feasibility, job) && hasApplyEmail();
-}
-
-function autoFillBlockedMessage(feasibility, job) {
-  if (canUseAutoFill(feasibility, job)) return null;
-  if (!canUseBrowserAssist(feasibility, job)) {
-    return "Auto-fill needs a Greenhouse or Lever posting URL. Jobs imported from Adzuna often link to other sites — use Open posting and add the direct application URL if needed.";
-  }
-  if (!hasApplyEmail()) {
-    return "Add your email in Apply profile (sidebar) to unlock auto-fill.";
-  }
-  return "Auto-fill is not available for this posting.";
-}
-
-async function openBrowserAssistFill(jobId) {
-  const result = await api(`/jobs/${jobId}/apply/assist`, { method: "POST" });
-  window.open(result.url, "_blank", "noopener,noreferrer");
-  searchMessage.textContent = result.message;
-  return result;
-}
-
-const jobsTableBody = document.getElementById("jobsTableBody");
-const jobDetail = document.getElementById("jobDetail");
-const filterQuery = document.getElementById("filterQuery");
-const filterStatus = document.getElementById("filterStatus");
-const searchMessage = document.getElementById("searchMessage");
-const statsRow = document.getElementById("statsRow");
-const pipelineView = document.getElementById("pipelineView");
-const dashboardView = document.getElementById("dashboardView");
-const dashboardCards = document.getElementById("dashboardCards");
-const recentJobs = document.getElementById("recentJobs");
-const viewTitle = document.getElementById("viewTitle");
-const viewSubtitle = document.getElementById("viewSubtitle");
-const jobAssistant = document.getElementById("jobAssistant");
-
-async function api(path, options = {}) {
-  const response = await fetch(`${API}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail || "Request failed");
-  }
-  return response.status === 204 ? null : response.json();
-}
-
-function formatDate(value) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString();
-}
-
-function badge(status) {
-  return `<span class="badge ${status}">${statusLabels[status] || status}</span>`;
-}
-
-function getFilteredJobs() {
-  const q = filterQuery.value.trim().toLowerCase();
-  const status = filterStatus.value;
-  return jobs.filter((job) => {
-    if (!status && job.status === "ignored") return false;
-    const matchesStatus = !status || job.status === status;
-    const haystack = `${job.title} ${job.company} ${job.notes || ""}`.toLowerCase();
-    const matchesQuery = !q || haystack.includes(q);
-    return matchesStatus && matchesQuery;
+function renderProfileGrid() {
+  const grid = $("#profileList");
+  grid.innerHTML = "";
+  state.users.forEach((u) => {
+    const card = document.createElement("button");
+    card.className = "profile-tile";
+    card.type = "button";
+    card.innerHTML = `<div class="avatar">${esc(u.name.charAt(0).toUpperCase())}</div>
+      <div class="profile-tile-name">${esc(u.name)}</div>
+      <div class="muted small">${u.job_count} jobs${u.has_resume ? " · resume ✓" : ""}</div>`;
+    card.addEventListener("click", async () => {
+      setUserId(u.id);
+      await boot();
+    });
+    grid.appendChild(card);
   });
 }
 
-function fitScoreClass(score) {
-  if (score >= 80) return "strong";
-  if (score >= 60) return "moderate";
-  if (score >= 40) return "weak";
-  return "poor";
+async function createProfile(name) {
+  const created = await apiFetch("/users", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  state.users.push(created);
+  setUserId(created.id);
+  await boot();
 }
 
-function fitBadge(job) {
-  if (job.fit_score == null) {
-    return '<span class="fit-badge empty">—</span>';
+async function boot() {
+  $("#profileGate").classList.add("hidden");
+  $("#appShell").classList.remove("hidden");
+  const me = state.users.find((u) => u.id === state.userId);
+  $("#currentProfileName").textContent = me ? me.name : "Profile";
+  await loadProfileState();
+  switchView("chat");
+  if (!$("#chatMessages").children.length) {
+    addMessage("assistant", `Hi${me ? " " + esc(me.name) : ""}! Tell me what you'd like to do — for example <em>“search jobs based on my resume”</em>, <em>“search company Stripe”</em>, or <em>“ignore jobs that aren't senior”</em>.`);
   }
-  return `<span class="fit-badge ${fitScoreClass(job.fit_score)}" title="${job.fit_verdict || ""}">${job.fit_score}</span>`;
 }
 
-function jobFitFromJob(job) {
-  if (job.fit_score == null) {
-    return null;
+async function loadProfileState() {
+  try {
+    state.profile = await apiFetch("/profile");
+  } catch (_) {
+    state.profile = null;
   }
+  const hasResume = state.profile && state.profile.resume_filename;
+  $("#resumeEmptyState").classList.toggle("hidden", !!hasResume);
+}
+
+// Build a full profile PUT body from cached state (so partial updates don't
+// wipe extracted criteria — every SearchProfileData field must be sent).
+function profilePutBody(overrides = {}) {
+  const p = state.profile || {};
   return {
-    score: job.fit_score,
-    verdict: job.fit_verdict,
-    summary: job.fit_summary,
-    strengths: job.fit_strengths || [],
-    gaps: job.fit_gaps || [],
-    method: job.fit_method,
-    message: job.fit_message,
-    analyzed_at: job.fit_analyzed_at,
+    titles: p.titles || [], keywords: p.keywords || [], locations: p.locations || [],
+    skills: p.skills || [], industries: p.industries || [], seniority: p.seniority || null,
+    exclude_keywords: p.exclude_keywords || [], summary: p.summary || null,
+    match_strictness: p.match_strictness || 5, ...overrides,
   };
 }
 
-function applyModeBadge(job) {
-  if (!job.apply_mode) {
-    return '<span class="apply-badge empty">—</span>';
-  }
-  const label = applyModeLabels[job.apply_mode] || job.apply_mode;
-  const confidence =
-    job.apply_confidence != null ? `<span class="apply-confidence">${job.apply_confidence}%</span>` : "";
-  return `<span class="apply-badge ${job.apply_mode}" title="Apply mode">${label}${confidence}</span>`;
-}
-
-async function copyText(text, button) {
-  await navigator.clipboard.writeText(text);
-  const original = button.textContent;
-  button.textContent = "Copied";
-  setTimeout(() => {
-    button.textContent = original;
-  }, 1500);
-}
-
-function renderApplyPanel(job, status) {
-  const feasibility = status?.feasibility;
-  const kit = status?.kit;
-
-  if (!feasibility) {
-    return `
-      <section class="apply-card">
-        <div class="fit-header">
-          <div>
-            <h4>Apply</h4>
-            <p class="hint">Loading apply options...</p>
-          </div>
-        </div>
-      </section>`;
-  }
-
-  const materials = kit?.materials;
-  const checklist = kit?.checklist || [];
-  const copyFields = kit?.copy_fields || {};
-  const canAssist = canUseBrowserAssist(feasibility, job);
-  const canAutoFill = canUseAutoFill(feasibility, job);
-  const autoFillBlocked = autoFillBlockedMessage(feasibility, job);
-  const canAutoSubmit = feasibility.can_auto_submit;
-  const assistUrl = buildAssistUrl(job.url, job.id);
-
-  return `
-    <section class="apply-card">
-      <div class="fit-header">
-        <div>
-          <h4>Apply</h4>
-          <p class="hint">${feasibility.recommended_action}</p>
-        </div>
-        <button class="btn primary" id="prepareApplyBtn" type="button">
-          ${kit ? "Refresh apply kit" : "Prepare to apply"}
-        </button>
-      </div>
-      <div class="apply-mode-row">
-        <span class="apply-badge ${feasibility.apply_mode}">${applyModeLabels[feasibility.apply_mode] || feasibility.apply_mode}</span>
-        <span class="apply-confidence-pill ${fitScoreClass(feasibility.confidence)}">${feasibility.confidence}% confidence</span>
-        <span class="hint">ATS: ${feasibility.ats_type}</span>
-      </div>
-      <ul class="apply-reasons">
-        ${feasibility.reasons.map((reason) => `<li>${reason}</li>`).join("")}
-      </ul>
-      <div class="apply-actions-row">
-        ${
-          canAssist
-            ? `<a class="btn secondary" id="assistFillLink" href="${assistUrl}" target="_blank" rel="noopener noreferrer">Browser assist fill</a>`
-            : `<span class="hint">Browser assist fill needs a Greenhouse or Lever posting URL.</span>`
-        }
-        ${
-          canAutoFill
-            ? `<button class="btn secondary" id="autoFillBtn" type="button">Auto-fill form (no submit)</button>`
-            : autoFillBlocked
-              ? `<span class="hint">${autoFillBlocked}</span>`
-              : ""
-        }
-        ${
-          canAutoSubmit
-            ? `<button class="btn primary" id="autoSubmitBtn" type="button">Auto-apply (submit)</button>`
-            : ""
-        }
-      </div>
-      <details class="apply-phase-hint">
-        <summary>Phase 2: Chrome extension · Phase 3: Playwright</summary>
-        <p class="hint">
-          ${
-            canAssist
-              ? `<a class="link-btn" id="assistFillHintLink" href="${assistUrl}" target="_blank" rel="noopener noreferrer">Browser assist fill</a> opens the posting for the Chrome extension. `
-              : ""
-          }
-          ${
-            canAutoFill
-              ? `<button class="link-btn" type="button" id="autoFillHintBtn">Auto-fill</button> uses local Playwright without submit.`
-              : autoFillBlocked || "Save your email in Apply profile to use Playwright auto-fill on Greenhouse or Lever jobs."
-          }
-        </p>
-      </details>
-      ${
-        kit
-          ? `
-        <div class="apply-kit">
-          <strong>Checklist</strong>
-          <ul class="fit-list">
-            ${checklist.map((item) => `<li>${item.label}</li>`).join("")}
-          </ul>
-          ${
-            Object.keys(copyFields).length
-              ? `
-            <strong>Copy fields</strong>
-            <div class="apply-copy-grid">
-              ${Object.entries(copyFields)
-                .map(
-                  ([key, value]) => `
-                <div class="apply-copy-item">
-                  <div class="hint">${key}</div>
-                  <div id="copy-field-${key}">${value}</div>
-                  <button class="btn secondary copy-btn" type="button" data-copy-target="copy-field-${key}">Copy</button>
-                </div>`
-                )
-                .join("")}
-            </div>`
-              : ""
-          }
-          ${
-            materials
-              ? `
-            <strong>Materials</strong>
-            <div class="apply-material">
-              <div class="apply-material-header">
-                <span>Cover letter</span>
-                <button class="btn secondary copy-btn" type="button" data-copy-target="copy-cover-letter">Copy</button>
-              </div>
-              <pre class="apply-text" id="copy-cover-letter">${materials.cover_letter}</pre>
-            </div>
-            <div class="apply-material">
-              <div class="apply-material-header">
-                <span>Outreach email</span>
-                <button class="btn secondary copy-btn" type="button" data-copy-target="copy-outreach-email">Copy</button>
-              </div>
-              <pre class="apply-text" id="copy-outreach-email">${materials.outreach_email}</pre>
-            </div>
-            <div class="apply-material">
-              <div class="apply-material-header">
-                <span>Why this role</span>
-                <button class="btn secondary copy-btn" type="button" data-copy-target="copy-why-role">Copy</button>
-              </div>
-              <pre class="apply-text" id="copy-why-role">${materials.why_this_role}</pre>
-            </div>
-            ${
-              materials.answers?.length
-                ? materials.answers
-                    .map(
-                      (item, index) => `
-              <div class="apply-material">
-                <div class="apply-material-header">
-                  <span>${item.question}</span>
-                  <button class="btn secondary copy-btn" type="button" data-copy-target="copy-answer-${index}">Copy</button>
-                </div>
-                <pre class="apply-text" id="copy-answer-${index}">${item.answer}</pre>
-              </div>`
-                    )
-                    .join("")
-                : ""
-            }`
-              : ""
-          }
-          <div class="apply-actions-row">
-            <a class="btn secondary" href="${job.url}" target="_blank" rel="noopener noreferrer">Open posting</a>
-            <button class="btn primary" id="completeApplyBtn" type="button">I submitted — mark applied</button>
-          </div>
-          ${status.prepared_at ? `<p class="hint">Kit prepared ${formatDate(status.prepared_at)}</p>` : ""}
-        </div>`
-          : `<p class="hint">Prepare an apply kit to generate tailored materials. Use browser assist or auto-fill when confidence is high enough.</p>`
-      }
-    </section>`;
-}
-
-function renderJobsTable() {
-  const rows = getFilteredJobs();
-  jobsTableBody.innerHTML = rows
-    .map(
-      (job) => `
-      <tr data-id="${job.id}" class="${job.id === selectedJobId ? "selected" : ""}">
-        <td>
-          <div>${job.title}</div>
-          ${
-            job.description_summary
-              ? `<div class="job-summary-snippet">${truncateText(job.description_summary, 120)}</div>`
-              : ""
-          }
-        </td>
-        <td>${job.company}</td>
-        <td>${job.location || "-"}</td>
-        <td>${fitBadge(job)}</td>
-        <td>${applyModeBadge(job)}</td>
-        <td>${badge(job.status)}</td>
-        <td>${job.source}</td>
-        <td>${formatDate(job.updated_at)}</td>
-        <td class="row-actions">
-          <a class="link-btn" href="${job.url}" target="_blank" rel="noopener noreferrer">Open</a>
-          ${
-            job.status === "ignored"
-              ? ""
-              : `<button class="link-btn" type="button" data-ignore="${job.id}">Ignore</button>`
-          }
-        </td>
-      </tr>`
-    )
-    .join("");
-
-  document.querySelectorAll("#jobsTableBody tr").forEach((row) => {
-    row.addEventListener("click", async (event) => {
-      if (event.target.closest("a, button")) return;
-      selectedJobId = Number(row.dataset.id);
-      renderJobsTable();
-      renderJobDetail();
-      await refreshJobApplyStatus(selectedJobId);
-      await ensureJobDescription(selectedJobId);
-    });
+// Post the resume-digest summary + an inline 1–10 strictness prompt into chat.
+function postResumeDigest(res) {
+  const titles = (res.titles || []).slice(0, 6).join(", ") || "—";
+  const kws = (res.keywords || []).slice(0, 10).join(", ") || "—";
+  const strict = res.match_strictness || (state.profile && state.profile.match_strictness) || 5;
+  const html = `✅ Resume digested — I set your search criteria.<br>
+    <span class="muted small"><strong>Titles:</strong> ${esc(titles)}<br><strong>Keywords:</strong> ${esc(kws)}</span>
+    <div class="strictness-block">
+      <div><strong>How strict should job matching be?</strong> <span class="muted small">(1 = more jobs · 10 = only best matches)</span></div>
+      <div class="strictness-row"><input type="range" min="1" max="10" value="${strict}" class="strictness-slider" /><span class="strictness-val">${strict}</span>/10</div>
+      <button class="btn primary sm strictness-search">Search jobs now</button>
+    </div>`;
+  const bubble = addMessage("assistant", html);
+  const slider = bubble.querySelector(".strictness-slider");
+  const valEl = bubble.querySelector(".strictness-val");
+  slider.addEventListener("input", () => { valEl.textContent = slider.value; });
+  slider.addEventListener("change", async () => {
+    try {
+      await apiFetch("/profile", { method: "PUT", body: JSON.stringify(profilePutBody({ match_strictness: Number(slider.value) })) });
+      if (state.profile) state.profile.match_strictness = Number(slider.value);
+      toast(`Match strictness set to ${slider.value}/10`);
+    } catch (e) { toast(e.message, true); }
   });
-
-  document.querySelectorAll("[data-ignore]").forEach((button) => {
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      await updateStatus(Number(button.dataset.ignore), "ignored");
-    });
-  });
+  bubble.querySelector(".strictness-search").addEventListener("click", () => sendChat("Search jobs based on my resume"));
 }
 
-function initPipelineResizer() {
-  const pipelineView = document.getElementById("pipelineView");
-  const resizer = document.getElementById("pipelineResizer");
-  const listPanel = pipelineView?.querySelector(".pipeline-list-panel");
-  if (!pipelineView || !resizer || !listPanel) return;
+/* ------------------------------------------------------------------ */
+/* View switching                                                      */
+/* ------------------------------------------------------------------ */
+function switchView(view) {
+  $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === view));
+  $("#chatView").classList.toggle("hidden", view !== "chat");
+  $("#jobsView").classList.toggle("hidden", view !== "jobs");
+  if (view === "jobs") loadJobs();
+}
 
-  const storageKey = "careerAgent.pipelineListWidth";
-  const savedWidth = localStorage.getItem(storageKey);
-  if (savedWidth) {
-    pipelineView.style.setProperty("--pipeline-list-width", `${savedWidth}px`);
-  }
+/* ------------------------------------------------------------------ */
+/* Chat                                                                */
+/* ------------------------------------------------------------------ */
+function addMessage(role, html) {
+  const wrap = document.createElement("div");
+  wrap.className = `msg ${role}`;
+  wrap.innerHTML = `<div class="bubble">${html}</div>`;
+  $("#chatMessages").appendChild(wrap);
+  $("#chatMessages").scrollTop = $("#chatMessages").scrollHeight;
+  return wrap;
+}
 
-  let startX = 0;
-  let startWidth = 0;
+function jobChipList(jobs) {
+  if (!jobs || !jobs.length) return "";
+  const items = jobs.slice(0, 12).map((j) =>
+    `<button class="job-chip" data-job-id="${j.id}">
+       <span class="job-chip-title">${esc(j.title)}</span>
+       <span class="muted small">${esc(j.company)}${j.location ? " · " + esc(j.location) : ""}</span>
+     </button>`
+  ).join("");
+  const more = jobs.length > 12 ? `<div class="muted small">+${jobs.length - 12} more in the Jobs tab</div>` : "";
+  return `<div class="job-chip-list">${items}</div>${more}`;
+}
 
-  const clampWidth = (width) => {
-    const bounds = pipelineView.getBoundingClientRect();
-    const min = 280;
-    const max = bounds.width - 280;
-    return Math.min(Math.max(width, min), max);
-  };
-
-  const setWidth = (width) => {
-    const nextWidth = clampWidth(width);
-    pipelineView.style.setProperty("--pipeline-list-width", `${nextWidth}px`);
-    return nextWidth;
-  };
-
-  const stopDragging = () => {
-    resizer.classList.remove("dragging");
-    document.body.classList.remove("resizing-panels");
-    document.removeEventListener("mousemove", onMouseMove);
-    document.removeEventListener("mouseup", stopDragging);
-    const width = parseInt(pipelineView.style.getPropertyValue("--pipeline-list-width"), 10);
-    if (!Number.isNaN(width)) {
-      localStorage.setItem(storageKey, String(width));
+async function sendChat(message) {
+  addMessage("user", esc(message));
+  const thinking = addMessage("assistant", `<span class="typing">…</span>`);
+  try {
+    const res = await apiFetch("/agent/chat", {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+    thinking.remove();
+    let html = esc(res.reply);
+    if (res.jobs && res.jobs.length) html += jobChipList(res.jobs);
+    const bubble = addMessage("assistant", html);
+    if (res.requires_confirmation && res.plan) {
+      renderConfirm(bubble, res.plan);
     }
-  };
+    if (res.action === "search" || res.action === "company_search") {
+      state.jobsDirty = true;
+      loadProfileState();
+    }
+    bindJobChips(bubble);
+  } catch (e) {
+    thinking.remove();
+    addMessage("assistant", `<span class="error-text">${esc(e.message)}</span>`);
+  }
+}
 
-  const onMouseMove = (event) => {
-    setWidth(startWidth + (event.clientX - startX));
-  };
-
-  resizer.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-    startX = event.clientX;
-    startWidth = listPanel.getBoundingClientRect().width;
-    resizer.classList.add("dragging");
-    document.body.classList.add("resizing-panels");
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", stopDragging);
-  });
-
-  resizer.addEventListener("keydown", (event) => {
-    const currentWidth = listPanel.getBoundingClientRect().width;
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      setWidth(currentWidth - 24);
-    } else if (event.key === "ArrowRight") {
-      event.preventDefault();
-      setWidth(currentWidth + 24);
+function renderConfirm(bubble, plan) {
+  const row = document.createElement("div");
+  row.className = "confirm-row";
+  row.innerHTML = `<button class="btn danger sm">Confirm</button><button class="btn secondary sm">Cancel</button>`;
+  const [confirmBtn, cancelBtn] = row.querySelectorAll("button");
+  confirmBtn.addEventListener("click", async () => {
+    confirmBtn.disabled = true;
+    try {
+      const result = await apiFetch("/agent/nl-jobs/execute", {
+        method: "POST",
+        body: JSON.stringify({ plan, confirmed: true }),
+      });
+      row.remove();
+      addMessage("assistant", esc(result.message));
+      state.jobsDirty = true;
+    } catch (e) {
+      addMessage("assistant", `<span class="error-text">${esc(e.message)}</span>`);
     }
   });
+  cancelBtn.addEventListener("click", () => {
+    row.remove();
+    addMessage("assistant", "Okay, cancelled.");
+  });
+  bubble.querySelector(".bubble").appendChild(row);
 }
 
-function renderFitPanel(job, fit) {
-  if (!fit) {
-    return `
-      <section class="fit-card">
-        <div class="fit-header">
-          <div>
-            <h4>Fit analysis</h4>
-            <p class="hint">Compare this role to your resume and profile before you apply manually.</p>
-          </div>
-          <button class="btn secondary" id="analyzeFitBtn" type="button">Analyze fit</button>
-        </div>
-      </section>`;
+function bindJobChips(scope) {
+  scope.querySelectorAll(".job-chip").forEach((chip) => {
+    chip.addEventListener("click", () => openJobModal(Number(chip.dataset.jobId)));
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Jobs view                                                           */
+/* ------------------------------------------------------------------ */
+function fitBadge(job) {
+  if (job.fit_score == null) return "";
+  let cls = "low";
+  if (job.fit_score >= 80) cls = "high";
+  else if (job.fit_score >= 60) cls = "mid";
+  return `<span class="fit-badge ${cls}">${job.fit_score}</span>`;
+}
+
+const STATUS_LABELS = {
+  new: "New", reviewing: "Reviewing", applied: "Applied", interview: "Interview",
+  offer: "Offer", rejected: "Rejected", passed: "Passed", withdrawn: "Withdrawn", ignored: "Ignored",
+};
+
+async function loadJobs() {
+  const statusSel = $("#jobsStatusFilter").value;
+  let path = "/jobs";
+  const params = [];
+  if (statusSel) params.push(`status=${statusSel}`);
+  if (statusSel === "ignored") params.push("include_ignored=true");
+  if (params.length) path += "?" + params.join("&");
+  try {
+    state.jobs = await apiFetch(path);
+    state.jobsDirty = false;
+    renderJobs();
+  } catch (e) {
+    $("#jobsList").innerHTML = `<p class="error-text">${esc(e.message)}</p>`;
   }
-
-  return `
-    <section class="fit-card">
-      <div class="fit-header">
-        <div>
-          <h4>Fit analysis</h4>
-          <p class="hint">Guidance only — you apply manually on the company site.</p>
-        </div>
-        <button class="btn secondary" id="analyzeFitBtn" type="button">Re-analyze</button>
-      </div>
-      <div class="fit-score-row">
-        <div class="fit-score ${fitScoreClass(fit.score)}">
-          <strong>${fit.score}</strong>
-          <span>/ 100</span>
-        </div>
-        <div>
-          <div class="fit-verdict">${fit.verdict}</div>
-          <p class="fit-summary">${fit.summary}</p>
-        </div>
-      </div>
-      <div class="fit-columns">
-        <div>
-          <strong>Strengths</strong>
-          <ul class="fit-list">
-            ${fit.strengths.map((item) => `<li>${item}</li>`).join("")}
-          </ul>
-        </div>
-        <div>
-          <strong>Gaps</strong>
-          <ul class="fit-list">
-            ${fit.gaps.map((item) => `<li>${item}</li>`).join("")}
-          </ul>
-        </div>
-      </div>
-      ${fit.message ? `<p class="hint">${fit.message}</p>` : ""}
-      ${fit.analyzed_at ? `<p class="hint">Analyzed ${formatDate(fit.analyzed_at)}</p>` : ""}
-    </section>`;
 }
 
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function truncateText(text, limit = 140) {
-  if (!text) return "";
-  const cleaned = text.replace(/\s+/g, " ").trim();
-  if (cleaned.length <= limit) return cleaned;
-  return `${cleaned.slice(0, limit - 1)}…`;
-}
-
-function renderDescriptionPanel(job) {
-  if (!job.description_summary) {
-    return `
-      <section class="description-card">
-        <div class="fit-header">
-          <div>
-            <h4>Role summary</h4>
-            <p class="hint">Fetching job description…</p>
-          </div>
-          <button class="btn secondary" id="refreshDescriptionBtn" type="button">Fetch summary</button>
-        </div>
-      </section>`;
-  }
-
-  return `
-    <section class="description-card">
-      <div class="fit-header">
-        <div>
-          <h4>Role summary</h4>
-          <p class="hint">Read this without opening the posting${
-            job.description_enriched_at ? ` · updated ${formatDate(job.description_enriched_at)}` : ""
-          }</p>
-        </div>
-        <button class="btn secondary" id="refreshDescriptionBtn" type="button">Refresh</button>
-      </div>
-      <div class="job-summary-text">${escapeHtml(job.description_summary).replace(/\n/g, "<br>")}</div>
-    </section>`;
-}
-
-function renderJobDetail() {
-  const job = jobs.find((item) => item.id === selectedJobId);
-  if (!job) {
-    jobDetail.className = "detail-card empty";
-    jobDetail.innerHTML = `
-      <h3>Select a job</h3>
-      <p>Choose a role to review details, update status, add notes, and open the posting.</p>`;
+function renderJobs() {
+  const term = $("#jobsFilter").value.trim().toLowerCase();
+  const list = state.jobs.filter((j) =>
+    !term || j.title.toLowerCase().includes(term) || j.company.toLowerCase().includes(term)
+  );
+  $("#jobsCount").textContent = `${list.length} job${list.length === 1 ? "" : "s"}`;
+  if (!list.length) {
+    $("#jobsList").innerHTML = `<div class="empty-inline muted">No jobs yet. Ask the agent in Chat to search for some.</div>`;
     return;
   }
-
-  jobDetail.className = "detail-card";
-  jobDetail.innerHTML = `
-    <div class="detail-header">
-      <div>
-        <h3>${job.title}</h3>
-        <p>${job.company}${job.location ? ` · ${job.location}` : ""}</p>
+  $("#jobsList").innerHTML = list.map((job) => `
+    <div class="job-row" data-job-id="${job.id}">
+      <div class="job-row-main">
+        <div class="job-row-title">${fitBadge(job)}<span>${esc(job.title)}</span></div>
+        <div class="muted small">${esc(job.company)}${job.location ? " · " + esc(job.location) : ""} · <span class="status-pill ${job.status}">${STATUS_LABELS[job.status] || job.status}</span></div>
       </div>
-      ${badge(job.status)}
+      <div class="job-row-actions">
+        <button class="btn primary sm" data-action="agentic" title="Follow the link and fill the application in your Chrome (no submit)">Auto-fill</button>
+        <button class="btn secondary sm" data-action="ignore">Ignore</button>
+      </div>
+    </div>`).join("");
+
+  $$("#jobsList .job-row").forEach((row) => {
+    const id = Number(row.dataset.jobId);
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      openJobModal(id);
+    });
+    row.querySelector('[data-action="agentic"]').addEventListener("click", () => agenticApply(id));
+    row.querySelector('[data-action="ignore"]').addEventListener("click", () => ignoreJob(id));
+  });
+}
+
+async function ignoreJob(id) {
+  try {
+    await apiFetch(`/jobs/${id}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status: "ignored", note: "Ignored from jobs list" }),
+    });
+    toast("Job ignored");
+    loadJobs();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function agenticApply(id) {
+  toast("Agentic apply: following the link and filling in Chrome…");
+  try {
+    const res = await apiFetch(`/jobs/${id}/apply/agentic`, { method: "POST" });
+    toast(res.message, !res.filled_fields.length);
+    if (!$("#jobModal").classList.contains("hidden")) openJobModal(id);
+    else { state.jobsDirty = true; loadJobs(); }
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function autoApply(id, submit) {
+  toast(submit ? "Auto-applying in Chrome…" : "Auto-filling in Chrome…");
+  try {
+    const res = await apiFetch(`/jobs/${id}/apply/auto`, {
+      method: "POST",
+      body: JSON.stringify({ confirmed: true, submit }),
+    });
+    toast(res.message);
+    if ($("#jobModal").classList.contains("hidden") === false) openJobModal(id);
+    else loadJobs();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Job modal                                                           */
+/* ------------------------------------------------------------------ */
+async function openJobModal(id) {
+  const modal = $("#jobModal");
+  const body = $("#jobModalBody");
+  modal.classList.remove("hidden");
+  body.innerHTML = `<p class="muted">Loading…</p>`;
+  try {
+    const [job, apply] = await Promise.all([
+      apiFetch(`/jobs/${id}`),
+      apiFetch(`/jobs/${id}/apply`).catch(() => null),
+    ]);
+    renderJobModal(job, apply);
+  } catch (e) {
+    body.innerHTML = `<p class="error-text">${esc(e.message)}</p>`;
+  }
+}
+
+function renderJobModal(job, apply) {
+  const f = apply && apply.feasibility;
+  const hasEmail = state.applyProfile ? !!(state.applyProfile.identity.email || "").trim() : true;
+  const isTierA = f && ["greenhouse", "lever"].includes(f.ats_type);
+  const statusOptions = Object.keys(STATUS_LABELS)
+    .map((s) => `<option value="${s}" ${s === job.status ? "selected" : ""}>${STATUS_LABELS[s]}</option>`)
+    .join("");
+
+  const fitBlock = job.fit_score != null ? `
+    <div class="modal-section">
+      <h4>Fit ${fitBadge(job)} <span class="muted small">${esc(job.fit_verdict || "")}</span></h4>
+      <p class="muted">${esc(job.fit_summary || "")}</p>
+    </div>` : "";
+
+  const feasBlock = f ? `
+    <div class="modal-section">
+      <h4>Apply</h4>
+      <p class="muted small">${esc(f.recommended_action)}</p>
+      <div class="apply-meta">
+        <span class="tag">${esc(f.apply_mode)}</span>
+        <span class="tag">${f.confidence}% confidence</span>
+        <span class="tag">ATS: ${esc(f.ats_type)}</span>
+      </div>
+      <ul class="reasons">${f.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
+    </div>` : "";
+
+  $("#jobModalBody").innerHTML = `
+    <h3>${esc(job.title)}</h3>
+    <p class="muted">${esc(job.company)}${job.location ? " · " + esc(job.location) : ""}${job.salary ? " · " + esc(job.salary) : ""}</p>
+    <a class="link" href="${esc(job.url)}" target="_blank" rel="noopener">Open posting ↗</a>
+    ${fitBlock}
+    ${feasBlock}
+    <div class="modal-actions">
+      <button class="btn secondary sm" id="mAnalyze">Analyze fit</button>
+      <button class="btn secondary sm" id="mPrepare">Prepare to apply</button>
+      <button class="btn primary sm" id="mAgentic" title="Follow the link to the real form and fill it in your Chrome (no submit)">Agentic apply (fill in Chrome)</button>
+      ${isTierA && hasEmail ? `<button class="btn secondary sm" id="mAutoFill">Greenhouse/Lever auto-fill</button>` : ""}
+      ${f && f.can_auto_submit ? `<button class="btn primary sm" id="mAutoSubmit">Auto-apply (submit)</button>` : ""}
     </div>
-    <div class="detail-meta">
-      <div><strong>Source:</strong> ${job.source}</div>
-      <div><strong>Discovered:</strong> ${formatDate(job.discovered_at)}</div>
-      <div><strong>Salary:</strong> ${job.salary || "Not listed"}</div>
-      <div><strong>URL:</strong> <a class="link-btn" href="${job.url}" target="_blank" rel="noopener">${job.url}</a></div>
+    <p class="hint">Agentic apply follows the posting link to the real application form and fills it in your debug Chrome (port 9333) — it never submits. Stops at logins/CAPTCHAs.</p>
+    <div class="modal-section">
+      <label>Status</label>
+      <select id="mStatus">${statusOptions}</select>
+      <label>Notes</label>
+      <textarea id="mNotes" rows="3">${esc(job.notes || "")}</textarea>
+      <button class="btn secondary sm" id="mSaveNotes">Save notes & status</button>
+      <button class="btn secondary sm" id="mMarkApplied">Mark applied</button>
     </div>
-    ${renderDescriptionPanel(job)}
-    ${renderFitPanel(job, jobFitFromJob(job))}
-    ${renderApplyPanel(job, applyStatusCache.get(job.id))}
-    <div class="detail-actions">
-      <a class="btn secondary" href="${job.url}" target="_blank" rel="noopener noreferrer">Open posting</a>
-      ${
-        isExtensionAtsUrl(job.url)
-          ? `<a class="btn secondary" id="detailAssistFillLink" href="${buildAssistUrl(job.url, job.id)}" target="_blank" rel="noopener noreferrer">Browser assist fill</a>`
-          : ""
-      }
-      <button class="btn secondary" data-status="reviewing">Mark reviewing</button>
-      <button class="btn primary" data-status="applied">Mark applied</button>
-      <button class="btn secondary" data-status="interview">Mark interview</button>
-      <button class="btn secondary" data-status="rejected">Mark rejected</button>
-      <button class="btn secondary" data-status="offer">Mark offer</button>
-      <button class="btn secondary" data-status="passed">Mark passed</button>
-      <button class="btn secondary" data-status="ignored">Ignore</button>
-      <button class="btn secondary" id="deleteJobBtn">Delete</button>
-    </div>
-    <label>Notes</label>
-    <textarea id="jobNotes">${job.notes || ""}</textarea>
-    <button class="btn secondary" id="saveNotesBtn">Save notes</button>
-    <div class="timeline">
-      <strong>Timeline</strong>
-      ${(job.events || [])
-        .slice()
-        .reverse()
-        .map(
-          (event) => `
-          <div class="timeline-item">
-            <div>${badge(event.status)} · ${formatDate(event.created_at)}</div>
-            <div>${event.note || ""}</div>
-          </div>`
-        )
-        .join("")}
-    </div>
+    ${job.description_summary ? `<div class="modal-section"><h4>Summary</h4><p class="muted">${esc(job.description_summary)}</p></div>` : ""}
   `;
 
-  jobDetail.querySelectorAll("[data-status]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await updateStatus(job.id, button.dataset.status);
-    });
+  const id = job.id;
+  $("#mAnalyze").addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Analyzing…";
+    try { await apiFetch(`/jobs/${id}/fit`, { method: "POST" }); toast("Fit analyzed"); openJobModal(id); }
+    catch (err) { toast(err.message, true); e.target.disabled = false; }
   });
-
-  document.getElementById("saveNotesBtn").addEventListener("click", async () => {
-    const notes = document.getElementById("jobNotes").value;
-    await api(`/jobs/${job.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ notes }),
-    });
-    await loadJobs();
+  $("#mPrepare").addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Preparing…";
+    try { const r = await apiFetch(`/jobs/${id}/apply/prepare`, { method: "POST" }); toast(r.message); openJobModal(id); }
+    catch (err) { toast(err.message, true); e.target.disabled = false; }
   });
-
-  document.getElementById("deleteJobBtn").addEventListener("click", async () => {
-    if (!confirm("Delete this job from your tracker?")) return;
-    await api(`/jobs/${job.id}`, { method: "DELETE" });
-    selectedJobId = null;
-    await loadJobs();
+  $("#mAgentic").addEventListener("click", () => agenticApply(id));
+  if ($("#mAutoFill")) $("#mAutoFill").addEventListener("click", () => autoApply(id, false));
+  if ($("#mAutoSubmit")) $("#mAutoSubmit").addEventListener("click", () => {
+    if (confirm("Submit this application automatically?")) autoApply(id, true);
   });
-
-  const analyzeFitBtn = document.getElementById("analyzeFitBtn");
-  if (analyzeFitBtn) {
-    analyzeFitBtn.addEventListener("click", async () => {
-      analyzeFitBtn.disabled = true;
-      analyzeFitBtn.textContent = "Analyzing...";
-      try {
-        await api(`/jobs/${job.id}/fit`, { method: "POST" });
-        await loadJobs();
-      } catch (error) {
-        analyzeFitBtn.disabled = false;
-        analyzeFitBtn.textContent = job.fit_score == null ? "Analyze fit" : "Re-analyze";
-        alert(error.message);
-      }
-    });
-  }
-
-  jobDetail.querySelectorAll(".copy-btn").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const target = document.getElementById(button.dataset.copyTarget);
-      if (!target) return;
-      try {
-        await copyText(target.textContent, button);
-      } catch (error) {
-        alert("Could not copy to clipboard.");
-      }
-    });
+  $("#mSaveNotes").addEventListener("click", async () => {
+    try {
+      await apiFetch(`/jobs/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ notes: $("#mNotes").value, status: $("#mStatus").value }),
+      });
+      toast("Saved");
+      state.jobsDirty = true;
+    } catch (e) { toast(e.message, true); }
   });
-
-  const prepareApplyBtn = document.getElementById("prepareApplyBtn");
-  if (prepareApplyBtn) {
-    prepareApplyBtn.addEventListener("click", async () => {
-      prepareApplyBtn.disabled = true;
-      prepareApplyBtn.textContent = "Preparing...";
-      try {
-        const result = await api(`/jobs/${job.id}/apply/prepare`, { method: "POST" });
-        applyStatusCache.set(job.id, {
-          job_id: job.id,
-          feasibility: result.feasibility,
-          kit: result.kit,
-          prepared_at: result.prepared_at,
-          latest_attempt_status: "prepared",
-        });
-        await loadJobs();
-        searchMessage.textContent = result.message;
-      } catch (error) {
-        prepareApplyBtn.disabled = false;
-        prepareApplyBtn.textContent = applyStatusCache.get(job.id)?.kit ? "Refresh apply kit" : "Prepare to apply";
-        alert(error.message);
-      }
-    });
-  }
-
-  const completeApplyBtn = document.getElementById("completeApplyBtn");
-  if (completeApplyBtn) {
-    completeApplyBtn.addEventListener("click", async () => {
-      try {
-        await api(`/jobs/${job.id}/apply/complete`, {
-          method: "POST",
-          body: JSON.stringify({ note: "Application submitted manually on company site" }),
-        });
-        await loadJobs();
-        searchMessage.textContent = "Marked as applied.";
-      } catch (error) {
-        alert(error.message);
-      }
-    });
-  }
-
-  const assistFillLink = document.getElementById("assistFillLink");
-  const detailAssistFillLink = document.getElementById("detailAssistFillLink");
-  const assistFillHintLink = document.getElementById("assistFillHintLink");
-  [assistFillLink, detailAssistFillLink, assistFillHintLink].forEach((link) => {
-    if (!link) return;
-    link.addEventListener("click", () => {
-      api(`/jobs/${job.id}/apply/assist`, { method: "POST" })
-        .then((result) => {
-          searchMessage.textContent = result.message;
-        })
-        .catch((error) => {
-          searchMessage.textContent = `Opened posting. ${error.message}`;
-        });
-    });
+  $("#mMarkApplied").addEventListener("click", async () => {
+    try { await apiFetch(`/jobs/${id}/apply/complete`, { method: "POST", body: JSON.stringify({}) }); toast("Marked applied"); openJobModal(id); state.jobsDirty = true; }
+    catch (e) { toast(e.message, true); }
   });
-
-  const autoFillHintBtn = document.getElementById("autoFillHintBtn");
-  if (autoFillHintBtn) {
-    autoFillHintBtn.addEventListener("click", () => {
-      document.getElementById("autoFillBtn")?.click();
-    });
-  }
-
-  const autoFillBtn = document.getElementById("autoFillBtn");
-  if (autoFillBtn) {
-    autoFillBtn.addEventListener("click", async () => {
-      const confirmed = confirm(
-        "Auto-fill will open the application in a visible browser window, fill fields, and leave it open for your review. It will not submit. Continue?"
-      );
-      if (!confirmed) return;
-      autoFillBtn.disabled = true;
-      autoFillBtn.textContent = "Filling...";
-      try {
-        const result = await api(`/jobs/${job.id}/apply/auto`, {
-          method: "POST",
-          body: JSON.stringify({ confirmed: true, submit: false }),
-        });
-        let message = `${result.message} Fields: ${result.filled_fields.join(", ")}`;
-        if (result.screenshot_path) {
-          message += ` Screenshot: /api/jobs/${job.id}/apply/screenshot`;
-        }
-        searchMessage.innerHTML = message;
-        await loadJobs();
-      } catch (error) {
-        alert(error.message);
-      } finally {
-        autoFillBtn.disabled = false;
-        autoFillBtn.textContent = "Auto-fill form (no submit)";
-      }
-    });
-  }
-
-  const autoSubmitBtn = document.getElementById("autoSubmitBtn");
-  if (autoSubmitBtn) {
-    autoSubmitBtn.addEventListener("click", async () => {
-      const confirmed = confirm(
-        "Auto-apply will fill and submit this application via Playwright. Only continue if you have reviewed the apply kit. Submit now?"
-      );
-      if (!confirmed) return;
-      autoSubmitBtn.disabled = true;
-      autoSubmitBtn.textContent = "Submitting...";
-      try {
-        const result = await api(`/jobs/${job.id}/apply/auto`, {
-          method: "POST",
-          body: JSON.stringify({ confirmed: true, submit: true }),
-        });
-        let message = result.message;
-        if (result.screenshot_path) {
-          message += ` Screenshot: /api/jobs/${job.id}/apply/screenshot`;
-        }
-        searchMessage.innerHTML = message;
-        await loadJobs();
-      } catch (error) {
-        alert(error.message);
-      } finally {
-        autoSubmitBtn.disabled = false;
-        autoSubmitBtn.textContent = "Auto-apply (submit)";
-      }
-    });
-  }
-  const refreshDescriptionBtn = document.getElementById("refreshDescriptionBtn");
-  if (refreshDescriptionBtn) {
-    refreshDescriptionBtn.addEventListener("click", async () => {
-      await enrichJobDescription(job.id, true);
-    });
-  }
-
-  if (!job.description_summary) {
-    ensureJobDescription(job.id);
-  }
 }
 
-async function enrichJobDescription(jobId, force = false) {
-  const job = jobs.find((item) => item.id === jobId);
-  if (!job) return;
-  if (!force && job.description_summary) return;
-
-  const button = document.getElementById("refreshDescriptionBtn");
-  if (button) {
-    button.disabled = true;
-    button.textContent = "Fetching...";
-  }
-
-  try {
-    const result = await api(`/jobs/${jobId}/description/enrich`, { method: "POST" });
-    const index = jobs.findIndex((item) => item.id === jobId);
-    if (index >= 0) {
-      jobs[index] = {
-        ...jobs[index],
-        description: result.description,
-        description_summary: result.description_summary,
-        description_enriched_at: result.description_enriched_at,
-      };
-    }
-    renderJobsTable();
-    if (selectedJobId === jobId) {
-      renderJobDetail();
-    }
-  } catch (error) {
-    if (selectedJobId === jobId) {
-      const panel = jobDetail.querySelector(".description-card .hint");
-      if (panel) panel.textContent = error.message;
-    }
-  }
+function closeJobModal() {
+  $("#jobModal").classList.add("hidden");
+  if (state.jobsDirty && !$("#jobsView").classList.contains("hidden")) loadJobs();
 }
 
-async function ensureJobDescription(jobId) {
-  const job = jobs.find((item) => item.id === jobId);
-  if (!job || job.description_summary) return;
-  await enrichJobDescription(jobId);
+/* ------------------------------------------------------------------ */
+/* Settings drawer                                                     */
+/* ------------------------------------------------------------------ */
+async function openDrawer() {
+  $("#settingsDrawer").classList.remove("hidden");
+  await Promise.all([loadDrawerProfile(), loadApplyProfile(), loadCompanies()]);
+}
+function closeDrawer() {
+  $("#settingsDrawer").classList.add("hidden");
 }
 
-async function refreshJobApplyStatus(jobId) {
-  try {
-    const status = await api(`/jobs/${jobId}/apply`);
-    applyStatusCache.set(jobId, status);
-    if (selectedJobId === jobId) {
-      renderJobDetail();
-    }
-  } catch (error) {
-    if (selectedJobId === jobId) {
-      applyStatusCache.set(jobId, null);
-    }
-  }
-}
+function joinList(arr) { return (arr || []).join(", "); }
+function splitList(str) { return str.split(",").map((s) => s.trim()).filter(Boolean); }
 
-function renderStats() {
-  const counts = {};
-  jobs.forEach((job) => {
-    if (job.status === "ignored") return;
-    counts[job.status] = (counts[job.status] || 0) + 1;
-  });
-
-  statsRow.classList.remove("hidden");
-  statsRow.innerHTML = Object.entries(counts)
-    .map(
-      ([status, count]) => `
-      <div class="stat-card">
-        <span>${statusLabels[status] || status}</span>
-        <strong>${count}</strong>
-      </div>`
-    )
-    .join("");
-}
-
-async function renderDashboard() {
-  const data = await api("/dashboard");
-  dashboardCards.innerHTML = Object.entries(data.by_status)
-    .filter(([, count]) => count > 0)
-    .map(
-      ([status, count]) => `
-      <div class="dashboard-card">
-        <span>${statusLabels[status] || status}</span>
-        <strong>${count}</strong>
-      </div>`
-    )
-    .join("");
-
-  recentJobs.innerHTML = data.recent
-    .map(
-      (job) => `
-      <div class="timeline-item">
-        <div><strong>${job.title}</strong> · ${job.company}</div>
-        <div>${badge(job.status)} · ${formatDate(job.updated_at)}</div>
-      </div>`
-    )
-    .join("");
-}
-
-function splitCsv(value) {
-  return value.split(",").map((v) => v.trim()).filter(Boolean);
-}
-
-function joinCsv(values) {
-  return (values || []).join(", ");
-}
-
-function fillProfileForm(profile) {
-  document.getElementById("profileSeniority").value = profile.seniority || "";
-  document.getElementById("searchTitles").value = joinCsv(profile.titles);
-  document.getElementById("searchKeywords").value = joinCsv(profile.keywords);
-  document.getElementById("searchSkills").value = joinCsv(profile.skills);
-  document.getElementById("searchIndustries").value = joinCsv(profile.industries);
-  document.getElementById("searchLocations").value = joinCsv(profile.locations);
-  document.getElementById("searchExclude").value = joinCsv(profile.exclude_keywords);
-  document.getElementById("profileSummary").value = profile.summary || "";
-
-  const resumeStatus = document.getElementById("resumeStatus");
-  const removeBtn = document.getElementById("removeResumeBtn");
-  if (profile.resume_filename) {
-    const uploaded = profile.resume_uploaded_at
-      ? ` · uploaded ${formatDate(profile.resume_uploaded_at)}`
-      : "";
-    resumeStatus.textContent = `${profile.resume_filename}${uploaded}`;
-    removeBtn.classList.remove("hidden");
-  } else {
-    resumeStatus.textContent = profile.has_openai
-      ? "No resume uploaded. AI extraction is available."
-      : "No resume uploaded. Add OPENAI_API_KEY for AI extraction, or use basic extraction.";
-    removeBtn.classList.add("hidden");
-  }
-}
-
-function getProfilePayload() {
-  return {
-    seniority: document.getElementById("profileSeniority").value.trim() || null,
-    titles: splitCsv(document.getElementById("searchTitles").value),
-    keywords: splitCsv(document.getElementById("searchKeywords").value),
-    skills: splitCsv(document.getElementById("searchSkills").value),
-    industries: splitCsv(document.getElementById("searchIndustries").value),
-    locations: splitCsv(document.getElementById("searchLocations").value),
-    exclude_keywords: splitCsv(document.getElementById("searchExclude").value),
-    summary: document.getElementById("profileSummary").value.trim() || null,
-  };
-}
-
-function getSearchPayload() {
-  const profile = getProfilePayload();
-  return {
-    ...profile,
-    max_results: 50,
-  };
-}
-
-async function loadApplyProfile() {
-  const profile = await api("/profile/apply");
-  applyProfileCache = profile;
-  fillApplyProfileForm(profile);
-}
-
-function fillApplyProfileForm(profile, statusMessage = null) {
-  const identity = profile.identity || {};
-  document.getElementById("applyFullName").value = identity.full_name || "";
-  document.getElementById("applyEmail").value = identity.email || "";
-  document.getElementById("applyPhone").value = identity.phone || "";
-  document.getElementById("applyLinkedin").value = identity.linkedin_url || "";
-  document.getElementById("applyLocation").value = identity.location || "";
-  document.getElementById("applyWorkAuth").value = identity.work_authorization || "";
-  document.getElementById("applySponsorship").checked = Boolean(identity.requires_sponsorship);
-
-  const settings = profile.settings || {};
-  document.getElementById("applyAutoEnabled").checked = Boolean(settings.auto_apply_enabled);
-  document.getElementById("applyMinConfidence").value = settings.min_auto_confidence ?? 85;
-  document.getElementById("applyAlwaysConfirm").checked = settings.always_confirm_submit !== false;
-
-  const container = document.getElementById("savedAnswersList");
-  container.innerHTML = (profile.saved_answers || [])
-    .map(
-      (item, index) => `
-      <label>${item.label}</label>
-      <textarea class="saved-answer" data-answer-key="${item.key}" data-answer-label="${item.label}">${item.answer || ""}</textarea>`
-    )
-    .join("");
-
-  const message = document.getElementById("applyProfileMessage");
-  if (statusMessage) {
-    message.textContent = statusMessage;
-  } else if (profile.missing_fields?.length) {
-    message.textContent = `Missing for best results: ${profile.missing_fields.join(", ")}`;
-  } else {
-    message.textContent = "Apply profile complete.";
-  }
-}
-
-function getApplyProfilePayload() {
-  const savedAnswers = Array.from(document.querySelectorAll(".saved-answer")).map((field) => ({
-    key: field.dataset.answerKey,
-    label: field.dataset.answerLabel,
-    answer: field.value.trim(),
-  }));
-
-  return {
-    identity: {
-      full_name: document.getElementById("applyFullName").value.trim(),
-      email: document.getElementById("applyEmail").value.trim(),
-      phone: document.getElementById("applyPhone").value.trim(),
-      linkedin_url: document.getElementById("applyLinkedin").value.trim(),
-      website: "",
-      location: document.getElementById("applyLocation").value.trim(),
-      work_authorization: document.getElementById("applyWorkAuth").value.trim(),
-      requires_sponsorship: document.getElementById("applySponsorship").checked,
-    },
-    saved_answers: savedAnswers,
-    settings: {
-      auto_apply_enabled: document.getElementById("applyAutoEnabled").checked,
-      min_auto_confidence: Number(document.getElementById("applyMinConfidence").value) || 85,
-      always_confirm_submit: document.getElementById("applyAlwaysConfirm").checked,
-    },
-  };
-}
-
-async function saveApplyProfile() {
-  const profile = await api("/profile/apply", {
-    method: "PUT",
-    body: JSON.stringify(getApplyProfilePayload()),
-  });
-  applyProfileCache = profile;
-  fillApplyProfileForm(profile);
-  document.getElementById("applyProfileMessage").textContent = "Apply profile saved.";
-  if (selectedJobId) {
-    renderJobDetail();
-  }
-}
-
-async function loadProfile() {
-  const profile = await api("/profile");
-  fillProfileForm(profile);
+async function loadDrawerProfile() {
+  const p = state.profile || (await apiFetch("/profile"));
+  state.profile = p;
+  $("#profileSeniority").value = p.seniority || "";
+  $("#searchTitles").value = joinList(p.titles);
+  $("#searchKeywords").value = joinList(p.keywords);
+  $("#searchSkills").value = joinList(p.skills);
+  $("#searchIndustries").value = joinList(p.industries);
+  $("#searchLocations").value = joinList(p.locations);
+  $("#searchExclude").value = joinList(p.exclude_keywords);
+  $("#profileSummary").value = p.summary || "";
+  const strictness = p.match_strictness || 5;
+  $("#matchStrictness").value = strictness;
+  $("#strictnessValLabel").textContent = strictness;
+  $("#resumeStatus").textContent = p.resume_filename ? `Resume on file (uploaded ${p.resume_uploaded_at ? new Date(p.resume_uploaded_at).toLocaleDateString() : ""})` : "No resume uploaded.";
+  $("#removeResumeBtn").classList.toggle("hidden", !p.resume_filename);
 }
 
 async function saveProfile() {
-  const profile = await api("/profile", {
-    method: "PUT",
-    body: JSON.stringify(getProfilePayload()),
-  });
-  fillProfileForm(profile);
-  searchMessage.textContent = "Search profile saved.";
-}
-async function loadJobs() {
-  jobs = await api("/jobs");
-  renderStats();
-  renderJobsTable();
-  renderJobDetail();
-  if (!dashboardView.classList.contains("hidden")) {
-    await renderDashboard();
-  }
-}
-
-async function updateStatus(jobId, status) {
-  await api(`/jobs/${jobId}/status`, {
-    method: "POST",
-    body: JSON.stringify({
-      status,
-      note: `Marked as ${statusLabels[status] || status}`,
-    }),
-  });
-  if (status === "ignored" && selectedJobId === jobId) {
-    selectedJobId = null;
-  }
-  await loadJobs();
-}
-
-document.getElementById("runSearchBtn").addEventListener("click", async () => {
-  searchMessage.textContent = "Searching...";
   try {
-    await saveProfile();
-    const result = await api("/agent/search", {
-      method: "POST",
-      body: JSON.stringify(getSearchPayload()),
+    await apiFetch("/profile", {
+      method: "PUT",
+      body: JSON.stringify({
+        titles: splitList($("#searchTitles").value),
+        keywords: splitList($("#searchKeywords").value),
+        locations: splitList($("#searchLocations").value),
+        skills: splitList($("#searchSkills").value),
+        industries: splitList($("#searchIndustries").value),
+        seniority: $("#profileSeniority").value || null,
+        exclude_keywords: splitList($("#searchExclude").value),
+        summary: $("#profileSummary").value || null,
+        match_strictness: Number($("#matchStrictness").value),
+      }),
     });
-    searchMessage.textContent = result.message;
-    await loadJobs();
-  } catch (error) {
-    searchMessage.textContent = error.message;
-  }
-});
+    toast("Profile saved");
+    await loadProfileState();
+  } catch (e) { toast(e.message, true); }
+}
 
-document.getElementById("extractApplyProfileBtn").addEventListener("click", async () => {
-  const button = document.getElementById("extractApplyProfileBtn");
-  button.disabled = true;
-  button.textContent = "Extracting...";
+async function loadApplyProfile() {
+  const ap = await apiFetch("/profile/apply");
+  state.applyProfile = ap;
+  $("#applyFullName").value = ap.identity.full_name || "";
+  $("#applyEmail").value = ap.identity.email || "";
+  $("#applyPhone").value = ap.identity.phone || "";
+  $("#applyLinkedin").value = ap.identity.linkedin_url || "";
+  $("#applyLocation").value = ap.identity.location || "";
+  $("#applyWorkAuth").value = ap.identity.work_authorization || "";
+  $("#applySponsorship").checked = !!ap.identity.requires_sponsorship;
+  $("#applyAutoEnabled").checked = !!ap.settings.auto_apply_enabled;
+  $("#applyMinConfidence").value = ap.settings.min_auto_confidence;
+  $("#applyAlwaysConfirm").checked = !!ap.settings.always_confirm_submit;
+}
+
+async function saveApplyProfile() {
   try {
-    const profile = await api("/profile/apply/extract-from-resume", { method: "POST" });
-    fillApplyProfileForm(profile, profile.message);
-  } catch (error) {
-    document.getElementById("applyProfileMessage").textContent = error.message;
-  } finally {
-    button.disabled = false;
-    button.textContent = "Refresh from resume";
-  }
-});
-
-document.getElementById("saveApplyProfileBtn").addEventListener("click", async () => {
-  try {
-    await saveApplyProfile();
-  } catch (error) {
-    document.getElementById("applyProfileMessage").textContent = error.message;
-  }
-});
-
-document.getElementById("saveProfileBtn").addEventListener("click", async () => {
-  try {
-    await saveProfile();
-  } catch (error) {
-    searchMessage.textContent = error.message;
-  }
-});
-
-document.getElementById("resumeFile").addEventListener("change", async (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
-
-  searchMessage.textContent = "Analyzing resume...";
-  const formData = new FormData();
-  formData.append("file", file);
-
-  try {
-    const response = await fetch(`${API}/profile/resume`, {
-      method: "POST",
-      body: formData,
+    await apiFetch("/profile/apply", {
+      method: "PUT",
+      body: JSON.stringify({
+        identity: {
+          full_name: $("#applyFullName").value,
+          email: $("#applyEmail").value,
+          phone: $("#applyPhone").value,
+          linkedin_url: $("#applyLinkedin").value,
+          location: $("#applyLocation").value,
+          work_authorization: $("#applyWorkAuth").value,
+          requires_sponsorship: $("#applySponsorship").checked,
+        },
+        settings: {
+          auto_apply_enabled: $("#applyAutoEnabled").checked,
+          min_auto_confidence: Number($("#applyMinConfidence").value),
+          always_confirm_submit: $("#applyAlwaysConfirm").checked,
+        },
+      }),
     });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(error.detail || "Resume upload failed");
-    }
-    const profile = await response.json();
-    fillProfileForm(profile);
+    toast("Apply profile saved");
     await loadApplyProfile();
-    searchMessage.textContent = profile.message;
-  } catch (error) {
-    searchMessage.textContent = error.message;
-  } finally {
-    event.target.value = "";
-  }
-});
-
-document.getElementById("removeResumeBtn").addEventListener("click", async () => {
-  try {
-    const profile = await api("/profile/resume", { method: "DELETE" });
-    fillProfileForm(profile);
-    searchMessage.textContent = "Resume removed. Your search criteria are unchanged.";
-  } catch (error) {
-    searchMessage.textContent = error.message;
-  }
-});
-
-document.getElementById("googleJobsBtn").addEventListener("click", async () => {
-  const titles = document.getElementById("searchTitles").value;
-  const keywords = document.getElementById("searchKeywords").value;
-  const result = await api(`/agent/google-jobs-url?titles=${encodeURIComponent(titles)}&keywords=${encodeURIComponent(keywords)}`);
-  window.open(result.url, "_blank", "noopener");
-});
-
-document.getElementById("addJobBtn").addEventListener("click", async () => {
-  const payload = {
-    title: document.getElementById("manualTitle").value.trim(),
-    company: document.getElementById("manualCompany").value.trim(),
-    location: document.getElementById("manualLocation").value.trim() || null,
-    url: document.getElementById("manualUrl").value.trim(),
-    source: "manual",
-  };
-  if (!payload.title || !payload.company || !payload.url) {
-    alert("Title, company, and URL are required.");
-    return;
-  }
-  await api("/jobs", { method: "POST", body: JSON.stringify(payload) });
-  document.getElementById("manualTitle").value = "";
-  document.getElementById("manualCompany").value = "";
-  document.getElementById("manualLocation").value = "";
-  document.getElementById("manualUrl").value = "";
-  await loadJobs();
-});
-
-filterQuery.addEventListener("input", renderJobsTable);
-filterStatus.addEventListener("change", renderJobsTable);
-
-document.getElementById("deleteAllJobsBtn").addEventListener("click", async () => {
-  const count = jobs.length;
-  if (!count) {
-    alert("There are no jobs to delete.");
-    return;
-  }
-  const confirmed = confirm(
-    `Delete all ${count} job${count === 1 ? "" : "s"} from your tracker? This cannot be undone.`
-  );
-  if (!confirmed) return;
-
-  try {
-    const result = await api("/jobs", { method: "DELETE" });
-    selectedJobId = null;
-    await loadJobs();
-    searchMessage.textContent = `Deleted ${result.deleted} job${result.deleted === 1 ? "" : "s"}.`;
-  } catch (error) {
-    searchMessage.textContent = error.message;
-  }
-});
+  } catch (e) { toast(e.message, true); }
+}
 
 async function loadCompanies() {
-  targetCompanies = await api("/companies");
-  renderCompanyList();
+  const companies = await apiFetch("/companies");
+  $("#companyList").innerHTML = companies.map((c) =>
+    `<div class="company-item"><span>${esc(c.name)} <span class="muted small">(${esc(c.ats_type)})</span></span>
+     <button class="link-btn" data-company-id="${c.id}">Remove</button></div>`
+  ).join("") || `<p class="muted small">No target companies yet.</p>`;
+  $$("#companyList [data-company-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try { await apiFetch(`/companies/${btn.dataset.companyId}`, { method: "DELETE" }); loadCompanies(); }
+      catch (e) { toast(e.message, true); }
+    });
+  });
 }
 
-function renderCompanyList() {
-  const container = document.getElementById("companyList");
-  if (!targetCompanies.length) {
-    container.innerHTML = `<p class="hint">No target companies yet.</p>`;
-    return;
+/* ------------------------------------------------------------------ */
+/* Resume upload                                                       */
+/* ------------------------------------------------------------------ */
+async function uploadResume(fileInput, statusEl) {
+  const file = fileInput.files[0];
+  if (!file) return;
+  if (statusEl) statusEl.textContent = "Uploading and analyzing…";
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const res = await apiFetch("/profile/resume", { method: "POST", body: fd });
+    if (statusEl) statusEl.textContent = res.message || "Resume uploaded.";
+    toast("Resume digested");
+    await loadProfileState();
+    // refresh drawer fields if open
+    if (!$("#settingsDrawer").classList.contains("hidden")) loadDrawerProfile();
+    // update profile card in gate list
+    const me = state.users.find((u) => u.id === state.userId);
+    if (me) me.has_resume = true;
+    postResumeDigest(res);
+  } catch (e) {
+    if (statusEl) statusEl.textContent = e.message;
+    toast(e.message, true);
   }
+}
 
-  container.innerHTML = targetCompanies
-    .map(
-      (company) => `
-      <div class="company-item" data-id="${company.id}">
-        <div class="company-item-header">
-          <div>
-            <strong>${company.name}</strong>
-            <span class="ats-badge ${company.ats_type}">${company.ats_type}</span>
-          </div>
-          <span class="company-meta">${company.enabled ? "Enabled" : "Disabled"}</span>
-        </div>
-        <div class="company-meta">${company.careers_url}</div>
-        <div class="company-meta">
-          ${company.last_scraped_at ? `Last scanned ${formatDate(company.last_scraped_at)}` : "Not scanned yet"}
-          ${company.last_job_count != null ? ` · ${company.last_job_count} jobs` : ""}
-        </div>
-        <div class="company-actions">
-          <button class="btn secondary" data-action="toggle">${company.enabled ? "Disable" : "Enable"}</button>
-          <button class="btn secondary" data-action="delete">Remove</button>
-        </div>
-      </div>`
-    )
-    .join("");
+/* ------------------------------------------------------------------ */
+/* Profile switcher menu                                               */
+/* ------------------------------------------------------------------ */
+function toggleProfileMenu() {
+  const menu = $("#profileMenu");
+  if (!menu.classList.contains("hidden")) { menu.classList.add("hidden"); return; }
+  menu.innerHTML = state.users.map((u) =>
+    `<button class="menu-item ${u.id === state.userId ? "active" : ""}" data-uid="${u.id}">${esc(u.name)}</button>`
+  ).join("") + `<button class="menu-item add" data-uid="new">+ New profile</button>`;
+  menu.classList.remove("hidden");
+  menu.querySelectorAll(".menu-item").forEach((item) => {
+    item.addEventListener("click", async () => {
+      menu.classList.add("hidden");
+      if (item.dataset.uid === "new") {
+        showGate();
+      } else {
+        const id = Number(item.dataset.uid);
+        if (id !== state.userId) {
+          setUserId(id);
+          $("#chatMessages").innerHTML = "";
+          await boot();
+        }
+      }
+    });
+  });
+}
 
-  container.querySelectorAll(".company-item").forEach((item) => {
-    const companyId = Number(item.dataset.id);
-    item.querySelector('[data-action="toggle"]').addEventListener("click", async () => {
-      const company = targetCompanies.find((entry) => entry.id === companyId);
-      await api(`/companies/${companyId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ enabled: !company.enabled }),
+/* ------------------------------------------------------------------ */
+/* Static event wiring                                                 */
+/* ------------------------------------------------------------------ */
+function wireStaticHandlers() {
+  // Gate
+  $("#createProfileForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("#newProfileName").value.trim();
+    if (!name) return;
+    try { await createProfile(name); $("#newProfileName").value = ""; $("#gateMessage").textContent = ""; }
+    catch (err) { $("#gateMessage").textContent = err.message; }
+  });
+
+  // Tabs
+  $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+
+  // Profile switch
+  $("#profileSwitchBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleProfileMenu(); });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".profile-switch")) $("#profileMenu").classList.add("hidden");
+  });
+
+  // Settings drawer
+  $("#settingsBtn").addEventListener("click", openDrawer);
+  $("#drawerClose").addEventListener("click", closeDrawer);
+  $("#settingsDrawer").addEventListener("click", (e) => { if (e.target.id === "settingsDrawer") closeDrawer(); });
+
+  // Chat
+  $("#chatForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = $("#chatInput").value.trim();
+    if (!text) return;
+    $("#chatInput").value = "";
+    autoGrow($("#chatInput"));
+    sendChat(text);
+  });
+  $("#chatInput").addEventListener("input", (e) => autoGrow(e.target));
+  $("#chatInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#chatForm").requestSubmit(); }
+  });
+  $$("#promptChips .chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const p = chip.dataset.prompt;
+      if (p.endsWith(" ")) { $("#chatInput").value = p; $("#chatInput").focus(); autoGrow($("#chatInput")); }
+      else sendChat(p);
+    });
+  });
+
+  // Jobs view
+  $("#jobsFilter").addEventListener("input", renderJobs);
+  $("#jobsStatusFilter").addEventListener("change", loadJobs);
+
+  // Job modal
+  $("#jobModalClose").addEventListener("click", closeJobModal);
+  $("#jobModal").addEventListener("click", (e) => { if (e.target.id === "jobModal") closeJobModal(); });
+
+  // Resume uploads
+  $("#chatResumeFile").addEventListener("change", (e) => uploadResume(e.target, $("#chatResumeStatus")));
+  $("#resumeFile").addEventListener("change", (e) => uploadResume(e.target, $("#resumeStatus")));
+  $("#removeResumeBtn").addEventListener("click", async () => {
+    if (!confirm("Remove resume?")) return;
+    try { await apiFetch("/profile/resume", { method: "DELETE" }); toast("Resume removed"); await loadProfileState(); loadDrawerProfile(); }
+    catch (e) { toast(e.message, true); }
+  });
+
+  // Drawer actions
+  $("#matchStrictness").addEventListener("input", (e) => { $("#strictnessValLabel").textContent = e.target.value; });
+  $("#saveProfileBtn").addEventListener("click", saveProfile);
+  $("#saveApplyProfileBtn").addEventListener("click", saveApplyProfile);
+  $("#addCompanyBtn").addEventListener("click", async () => {
+    const name = $("#companyName").value.trim();
+    const url = $("#companyUrl").value.trim();
+    if (!name || !url) { toast("Name and URL required", true); return; }
+    try {
+      await apiFetch("/companies", { method: "POST", body: JSON.stringify({ name, careers_url: url }) });
+      $("#companyName").value = ""; $("#companyUrl").value = "";
+      loadCompanies();
+    } catch (e) { toast(e.message, true); }
+  });
+  $("#runCompanySearchBtn").addEventListener("click", async () => {
+    toast("Searching target companies…");
+    try {
+      const p = state.profile || {};
+      const r = await apiFetch("/agent/company-search", {
+        method: "POST",
+        body: JSON.stringify({
+          titles: p.titles, keywords: p.keywords, locations: p.locations,
+          skills: p.skills, exclude_keywords: p.exclude_keywords, seniority: p.seniority,
+        }),
       });
-      await loadCompanies();
-    });
-    item.querySelector('[data-action="delete"]').addEventListener("click", async () => {
-      const company = targetCompanies.find((entry) => entry.id === companyId);
-      if (!confirm(`Remove ${company.name} from target companies?`)) return;
-      await api(`/companies/${companyId}`, { method: "DELETE" });
-      await loadCompanies();
-    });
+      toast(r.message);
+      state.jobsDirty = true;
+    } catch (e) { toast(e.message, true); }
+  });
+  $("#addJobBtn").addEventListener("click", async () => {
+    const title = $("#manualTitle").value.trim();
+    const company = $("#manualCompany").value.trim();
+    const url = $("#manualUrl").value.trim();
+    if (!title || !company || !url) { $("#manualJobMessage").textContent = "Title, company, and URL required."; return; }
+    try {
+      await apiFetch("/jobs", {
+        method: "POST",
+        body: JSON.stringify({ title, company, location: $("#manualLocation").value.trim() || null, url }),
+      });
+      $("#manualTitle").value = ""; $("#manualCompany").value = ""; $("#manualLocation").value = ""; $("#manualUrl").value = "";
+      $("#manualJobMessage").textContent = "Job added.";
+      toast("Job added");
+      state.jobsDirty = true;
+    } catch (e) { $("#manualJobMessage").textContent = e.message; }
+  });
+  $("#deleteAllJobsBtn").addEventListener("click", async () => {
+    if (!confirm("Delete ALL jobs for this profile? This cannot be undone.")) return;
+    try { const r = await apiFetch("/jobs", { method: "DELETE" }); toast(`Deleted ${r.deleted} jobs`); state.jobsDirty = true; loadJobs(); }
+    catch (e) { toast(e.message, true); }
+  });
+
+  // Esc closes overlays
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (!$("#jobModal").classList.contains("hidden")) closeJobModal();
+      else if (!$("#settingsDrawer").classList.contains("hidden")) closeDrawer();
+    }
   });
 }
 
-function resetNlPlanUi() {
-  pendingNlPlan = null;
-  document.getElementById("nlJobPlanPanel").classList.add("hidden");
-  document.getElementById("nlJobExecuteBtn").classList.add("hidden");
-  document.getElementById("nlJobCancelBtn").classList.add("hidden");
+function autoGrow(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 160) + "px";
 }
 
-function renderNlPlan(plan) {
-  pendingNlPlan = plan;
-  const panel = document.getElementById("nlJobPlanPanel");
-  const executeBtn = document.getElementById("nlJobExecuteBtn");
-  const cancelBtn = document.getElementById("nlJobCancelBtn");
-
-  document.getElementById("nlJobExplanation").textContent = plan.explanation;
-  document.getElementById("nlJobMeta").textContent =
-    `${plan.affected_count} job(s) matched · action: ${plan.action}` +
-    (plan.requires_confirmation ? " · confirmation required" : "");
-  document.getElementById("nlJobSql").textContent = plan.sql_preview;
-
-  const preview = document.getElementById("nlJobPreview");
-  if (!plan.preview_jobs.length) {
-    preview.innerHTML = `<p class="hint">No matching jobs.</p>`;
-  } else {
-    preview.innerHTML = plan.preview_jobs
-      .map(
-        (job) => `
-        <div class="assistant-preview-item">
-          <strong>${job.title}</strong> · ${job.company}
-          <div class="hint">${job.location || "No location"} · ${job.status} · ${job.source}</div>
-        </div>`
-      )
-      .join("");
-    if (plan.affected_count > plan.preview_jobs.length) {
-      preview.innerHTML += `<p class="hint">Showing ${plan.preview_jobs.length} of ${plan.affected_count} matches.</p>`;
-    }
-  }
-
-  panel.classList.remove("hidden");
-  cancelBtn.classList.remove("hidden");
-
-  if (plan.requires_confirmation) {
-    const verb = plan.action === "delete" ? "Delete" : plan.action === "ignore" ? "Ignore" : "Apply";
-    executeBtn.textContent = `${verb} ${plan.affected_count} job(s)`;
-    executeBtn.classList.remove("hidden");
-  } else if (plan.action === "list") {
-    executeBtn.classList.add("hidden");
-  }
-}
-
-document.getElementById("nlJobPlanBtn").addEventListener("click", async () => {
-  const query = document.getElementById("nlJobQuery").value.trim();
-  if (!query) {
-    alert("Describe what you want to do with your jobs.");
-    return;
-  }
-  resetNlPlanUi();
-  try {
-    const plan = await api("/agent/nl-jobs/plan", {
-      method: "POST",
-      body: JSON.stringify({ query }),
-    });
-    renderNlPlan(plan);
-  } catch (error) {
-    alert(error.message);
-  }
-});
-
-document.getElementById("nlJobCancelBtn").addEventListener("click", () => {
-  resetNlPlanUi();
-});
-
-document.getElementById("nlJobExecuteBtn").addEventListener("click", async () => {
-  if (!pendingNlPlan) return;
-
-  const count = pendingNlPlan.affected_count;
-  const action = pendingNlPlan.action;
-  const verb = action === "delete" ? "delete" : action === "ignore" ? "ignore" : "update";
-  const confirmed = confirm(
-    `${pendingNlPlan.explanation}\n\nThis will ${verb} ${count} job(s). Continue?`
-  );
-  if (!confirmed) return;
-
-  try {
-    const result = await api("/agent/nl-jobs/execute", {
-      method: "POST",
-      body: JSON.stringify({ plan: pendingNlPlan, confirmed: true }),
-    });
-    resetNlPlanUi();
-    document.getElementById("nlJobQuery").value = "";
-    searchMessage.textContent = result.message;
-    selectedJobId = null;
-    await loadJobs();
-  } catch (error) {
-    alert(error.message);
-  }
-});
-
-document.getElementById("addCompanyBtn").addEventListener("click", async () => {
-  const name = document.getElementById("companyName").value.trim();
-  const careers_url = document.getElementById("companyUrl").value.trim();
-  if (!name || !careers_url) {
-    alert("Company name and careers URL are required.");
-    return;
-  }
-  try {
-    await api("/companies", {
-      method: "POST",
-      body: JSON.stringify({ name, careers_url }),
-    });
-    document.getElementById("companyName").value = "";
-    document.getElementById("companyUrl").value = "";
-    await loadCompanies();
-    searchMessage.textContent = `${name} added to target companies.`;
-  } catch (error) {
-    searchMessage.textContent = error.message;
-  }
-});
-
-document.getElementById("runCompanySearchBtn").addEventListener("click", async () => {
-  searchMessage.textContent = "Searching target companies...";
-  try {
-    await saveProfile();
-    const result = await api("/agent/company-search", {
-      method: "POST",
-      body: JSON.stringify(getSearchPayload()),
-    });
-    let message = result.message;
-    if (result.details?.length) {
-      const summary = result.details
-        .map((detail) => {
-          if (detail.error) return `${detail.company}: error`;
-          return `${detail.company}: +${detail.added}`;
-        })
-        .join(" · ");
-      message += ` ${summary}.`;
-    }
-    searchMessage.textContent = message;
-    await loadCompanies();
-    await loadJobs();
-  } catch (error) {
-    searchMessage.textContent = error.message;
-  }
-});
-
-document.querySelectorAll(".nav-btn").forEach((button) => {
-  button.addEventListener("click", async () => {
-    document.querySelectorAll(".nav-btn").forEach((btn) => btn.classList.remove("active"));
-    button.classList.add("active");
-    const view = button.dataset.view;
-    if (view === "dashboard") {
-      pipelineView.classList.add("hidden");
-      jobAssistant.classList.add("hidden");
-      dashboardView.classList.remove("hidden");
-      statsRow.classList.add("hidden");
-      viewTitle.textContent = "Dashboard";
-      viewSubtitle.textContent = "Overview of your semiconductor executive search.";
-      await renderDashboard();
-    } else {
-      dashboardView.classList.add("hidden");
-      jobAssistant.classList.remove("hidden");
-      pipelineView.classList.remove("hidden");
-      viewTitle.textContent = "Pipeline";
-      viewSubtitle.textContent = "Track discovery, applications, interviews, and outcomes.";
-      renderStats();
-    }
-  });
-});
-
-loadProfile()
-  .then(() => loadApplyProfile())
-  .then(() => Promise.all([loadJobs(), loadCompanies()]))
-  .then(() => initPipelineResizer())
-  .catch((error) => {
-    searchMessage.textContent = `Failed to load app: ${error.message}`;
-  });
-
-const sidebarAssistHint = document.getElementById("sidebarAssistHint");
-if (sidebarAssistHint) {
-  sidebarAssistHint.addEventListener("click", (event) => {
-    event.preventDefault();
-    if (!selectedJobId) {
-      searchMessage.textContent = "Select a Greenhouse or Lever job from the pipeline first.";
-      return;
-    }
-    const link = document.getElementById("assistFillLink") || document.getElementById("detailAssistFillLink");
-    if (link) {
-      link.click();
-      jobDetail.scrollIntoView({ behavior: "smooth", block: "start" });
-      return;
-    }
-    searchMessage.textContent = "Browser assist fill needs a Greenhouse or Lever posting URL.";
-  });
-}
+document.addEventListener("DOMContentLoaded", init);

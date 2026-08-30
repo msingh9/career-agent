@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..models import TargetCompany
 from .ats_parser import workday_tenant_from_host
-from .profile_match import job_matches_profile
+from .profile_match import job_match_score, strictness_to_threshold
 from .search_agent import (
     job_matches_location_filter,
     should_exclude_job,
@@ -149,19 +149,23 @@ def apply_company_to_jobs(jobs: list[dict], company_name: str) -> list[dict]:
 
 async def run_company_search(
     db: Session,
+    user_id: int,
     titles: list[str] | None = None,
     keywords: list[str] | None = None,
     locations: list[str] | None = None,
     skills: list[str] | None = None,
     exclude_keywords: list[str] | None = None,
     seniority: str | None = None,
+    company_ids: list[int] | None = None,
 ) -> dict:
-    companies = (
+    query = (
         db.query(TargetCompany)
+        .filter(TargetCompany.user_id == user_id)
         .filter(TargetCompany.enabled.is_(True))
-        .order_by(TargetCompany.name.asc())
-        .all()
     )
+    if company_ids:
+        query = query.filter(TargetCompany.id.in_(company_ids))
+    companies = query.order_by(TargetCompany.name.asc()).all()
     if not companies:
         return {
             "found": 0,
@@ -191,6 +195,10 @@ async def run_company_search(
         }
 
     exclude_keywords = exclude_keywords or []
+    from .profile import get_or_create_profile
+
+    strictness = get_or_create_profile(db, user_id).match_strictness or 5
+    threshold = strictness_to_threshold(strictness)
     total_found = 0
     total_added = 0
     total_skipped = 0
@@ -218,7 +226,7 @@ async def run_company_search(
                 seen_urls.add(url)
                 detail["found"] += 1
 
-                if not job_matches_profile(payload, titles, keywords, skills, seniority):
+                if job_match_score(payload, titles, keywords, skills, None, seniority, exclude_keywords) < threshold:
                     detail["filtered"] += 1
                     continue
                 if locations and not job_matches_location_filter(payload, locations):
@@ -231,6 +239,7 @@ async def run_company_search(
                 _, created = upsert_job(
                     db,
                     payload,
+                    user_id,
                     note=f"Discovered from {company.name} ({company.ats_type})",
                 )
                 if created:

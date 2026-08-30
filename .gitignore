@@ -14,3 +14,9 @@ data/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Local tooling / personal files
+.mcp.json
+Manish_Singh_Resume.*
+*_Resume.docx
+*_Resume.pdf

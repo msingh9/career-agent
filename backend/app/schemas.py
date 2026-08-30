@@ -62,6 +62,8 @@ class JobRead(JobBase):
     apply_mode: str | None = None
     apply_confidence: int | None = None
     apply_prepared_at: datetime | None = None
+    ats_type: str = "unsupported"
+    auto_apply_supported: bool = False
     events: list[JobEventRead] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
@@ -116,10 +118,12 @@ class SearchProfileRead(SearchProfileData):
     resume_uploaded_at: datetime | None = None
     updated_at: datetime | None = None
     has_openai: bool = False
+    match_strictness: int = 5
 
 
 class SearchProfileUpdate(SearchProfileData):
-    pass
+    # Optional so resume-extraction updates never reset the user's chosen value.
+    match_strictness: int | None = Field(default=None, ge=1, le=10)
 
 
 class ResumeUploadResult(SearchProfileRead):

@@ -226,8 +226,8 @@ def summarize_description(job: Job, description: str) -> tuple[str, str]:
     return _heuristic_summary(job, text), "heuristic"
 
 
-async def enrich_job_description(db: Session, job_id: int) -> JobDescriptionEnrichResult:
-    job = db.query(Job).filter(Job.id == job_id).one_or_none()
+async def enrich_job_description(db: Session, job_id: int, user_id: int) -> JobDescriptionEnrichResult:
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
     if not job:
         raise ValueError("Job not found.")
 

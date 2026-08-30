@@ -42,6 +42,9 @@ class NLJobPlan(BaseModel):
     requires_confirmation: bool
     affected_count: int
     preview_jobs: list[JobPreview] = Field(default_factory=list)
+    # Populated for the company_search action.
+    company_name: str | None = None
+    company_url: str | None = None
 
 
 class NLJobExecuteRequest(BaseModel):

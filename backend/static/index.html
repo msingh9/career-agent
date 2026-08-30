@@ -7,223 +7,194 @@
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
-    <div class="app">
-      <aside class="sidebar">
+    <!-- Profile picker (Netflix-style) -->
+    <div id="profileGate" class="gate hidden">
+      <div class="gate-card">
+        <h1>Who's searching?</h1>
+        <p class="muted">Pick a profile or create a new one. Each keeps its own resume, jobs, and settings.</p>
+        <div id="profileList" class="profile-grid"></div>
+        <form id="createProfileForm" class="create-profile">
+          <input id="newProfileName" type="text" placeholder="New profile name" maxlength="60" />
+          <button class="btn primary" type="submit">Create profile</button>
+        </form>
+        <p id="gateMessage" class="hint error-text"></p>
+      </div>
+    </div>
+
+    <!-- Main app shell -->
+    <div id="appShell" class="shell hidden">
+      <header class="topbar">
         <div class="brand">
-          <div class="brand-mark">SC</div>
-          <div>
-            <h1>Career Agent</h1>
-            <p>VP / Senior Director · Semiconductors</p>
+          <div class="brand-mark">CA</div>
+          <strong>Career Agent</strong>
+        </div>
+        <nav class="tabs">
+          <button class="tab active" data-view="chat">Chat</button>
+          <button class="tab" data-view="jobs">Jobs</button>
+        </nav>
+        <div class="topbar-right">
+          <div class="profile-switch">
+            <button id="profileSwitchBtn" class="profile-chip" type="button">
+              <span id="currentProfileName">Profile</span>
+              <span class="caret">▾</span>
+            </button>
+            <div id="profileMenu" class="profile-menu hidden"></div>
           </div>
+          <button id="settingsBtn" class="icon-btn" type="button" title="Settings">⚙</button>
+        </div>
+      </header>
+
+      <!-- CHAT VIEW -->
+      <main id="chatView" class="view chat-view">
+        <div id="chatMessages" class="chat-messages"></div>
+
+        <div id="resumeEmptyState" class="empty-card hidden">
+          <div class="empty-emoji">📄</div>
+          <h2>Upload your resume to get started</h2>
+          <p class="muted">I'll read it, build your search criteria, and then you can ask me to find and apply to jobs.</p>
+          <label class="file-label">
+            <input id="chatResumeFile" type="file" accept=".pdf,.txt" hidden />
+            <span class="btn primary">Upload resume (PDF or TXT)</span>
+          </label>
+          <p id="chatResumeStatus" class="hint"></p>
         </div>
 
-        <nav class="nav">
-          <button class="nav-btn active" data-view="pipeline">Pipeline</button>
-          <button class="nav-btn" data-view="dashboard">Dashboard</button>
-        </nav>
+        <div class="chat-composer">
+          <div id="promptChips" class="prompt-chips">
+            <button class="chip" type="button" data-prompt="Search jobs based on my resume">Search jobs from my resume</button>
+            <button class="chip" type="button" data-prompt="Search company ">Search a company…</button>
+            <button class="chip" type="button" data-prompt="Ignore all jobs that are not senior executive roles">Ignore non-senior roles</button>
+            <button class="chip" type="button" data-prompt="Show my applied jobs">Show applied jobs</button>
+          </div>
+          <form id="chatForm" class="chat-input-row">
+            <textarea id="chatInput" rows="1" placeholder="Ask the agent to search, filter, ignore, or apply…"></textarea>
+            <button id="chatSend" class="btn primary send-btn" type="submit">Send</button>
+          </form>
+        </div>
+      </main>
+
+      <!-- JOBS VIEW -->
+      <section id="jobsView" class="view jobs-view hidden">
+        <div class="jobs-toolbar">
+          <input id="jobsFilter" type="search" placeholder="Filter by title or company…" />
+          <select id="jobsStatusFilter">
+            <option value="">Active statuses</option>
+            <option value="new">New</option>
+            <option value="reviewing">Reviewing</option>
+            <option value="applied">Applied</option>
+            <option value="interview">Interview</option>
+            <option value="offer">Offer</option>
+            <option value="rejected">Rejected</option>
+            <option value="passed">Passed</option>
+            <option value="withdrawn">Withdrawn</option>
+            <option value="ignored">Ignored</option>
+          </select>
+          <span id="jobsCount" class="muted"></span>
+        </div>
+        <div id="jobsList" class="jobs-list"></div>
+      </section>
+    </div>
+
+    <!-- JOB DETAIL MODAL -->
+    <div id="jobModal" class="modal-backdrop hidden">
+      <div class="modal">
+        <button id="jobModalClose" class="modal-close" type="button">×</button>
+        <div id="jobModalBody" class="modal-body"></div>
+      </div>
+    </div>
+
+    <!-- SETTINGS DRAWER -->
+    <div id="settingsDrawer" class="drawer-backdrop hidden">
+      <aside class="drawer">
+        <div class="drawer-head">
+          <h2>Settings</h2>
+          <button id="drawerClose" class="icon-btn" type="button">×</button>
+        </div>
 
         <section class="panel">
-          <h2>Search profile</h2>
-          <p class="hint">Upload your resume to generate tailored search criteria. Edit any field before searching.</p>
+          <h3>Search profile</h3>
+          <p class="hint">Uploaded resume builds these automatically. Edit any field.</p>
           <label class="file-label">
             <input id="resumeFile" type="file" accept=".pdf,.txt" hidden />
-            <span class="btn secondary file-btn">Upload resume (PDF or TXT)</span>
+            <span class="btn secondary">Upload / replace resume</span>
           </label>
           <p id="resumeStatus" class="hint"></p>
-          <button id="removeResumeBtn" class="btn secondary hidden">Remove resume</button>
+          <button id="removeResumeBtn" class="btn secondary hidden" type="button">Remove resume</button>
           <label>Seniority</label>
           <input id="profileSeniority" type="text" placeholder="e.g. VP, Senior Director" />
-          <label>Titles (comma-separated)</label>
-          <input id="searchTitles" type="text" value="VP, Senior Director, Director" />
+          <label>Titles</label>
+          <input id="searchTitles" type="text" />
           <label>Keywords</label>
-          <input
-            id="searchKeywords"
-            type="text"
-            value="semiconductor, chip, fab, ASIC, foundry, GPU"
-          />
+          <input id="searchKeywords" type="text" />
           <label>Skills</label>
-          <input id="searchSkills" type="text" placeholder="e.g. P&L, fab operations, ASIC design" />
+          <input id="searchSkills" type="text" />
           <label>Industries</label>
-          <input id="searchIndustries" type="text" placeholder="e.g. semiconductors, EDA, automotive" />
-          <label>Locations (optional)</label>
+          <input id="searchIndustries" type="text" />
+          <label>Locations</label>
           <input id="searchLocations" type="text" placeholder="California, Austin, Remote" />
-          <p class="hint">Only jobs matching these locations are imported. Add Remote to include work-from-home roles.</p>
           <label>Exclude keywords</label>
-          <input id="searchExclude" type="text" placeholder="e.g. software sales, retail" />
+          <input id="searchExclude" type="text" />
           <label>Search strategy</label>
-          <textarea id="profileSummary" placeholder="AI-generated summary appears here after resume upload"></textarea>
-          <button id="saveProfileBtn" class="btn secondary">Save profile</button>
-          <button id="runSearchBtn" class="btn primary">Run job search</button>
-          <button id="googleJobsBtn" class="btn secondary">Open Google Jobs</button>
+          <textarea id="profileSummary" placeholder="AI summary appears after resume upload"></textarea>
+          <label>Match strictness: <span id="strictnessValLabel">5</span>/10</label>
+          <input id="matchStrictness" type="range" min="1" max="10" value="5" />
+          <p class="hint">1 = more jobs (relaxed) · 10 = only the best matches to your resume</p>
+          <button id="saveProfileBtn" class="btn secondary" type="button">Save profile</button>
           <p id="searchMessage" class="hint"></p>
         </section>
 
         <section class="panel">
-          <h2>Apply profile</h2>
-          <p class="hint">Filled automatically when you upload or replace your resume. Review and edit before applying.</p>
+          <h3>Apply profile</h3>
+          <p class="hint">Used to auto-fill applications.</p>
           <label>Full name</label>
-          <input id="applyFullName" type="text" placeholder="Jane Doe" />
+          <input id="applyFullName" type="text" />
           <label>Email</label>
           <input id="applyEmail" type="email" placeholder="you@email.com" />
           <label>Phone</label>
-          <input id="applyPhone" type="text" placeholder="+1 555 0100" />
+          <input id="applyPhone" type="text" />
           <label>LinkedIn URL</label>
-          <input id="applyLinkedin" type="url" placeholder="https://linkedin.com/in/..." />
+          <input id="applyLinkedin" type="url" />
           <label>Location</label>
-          <input id="applyLocation" type="text" placeholder="San Francisco, CA" />
+          <input id="applyLocation" type="text" />
           <label>Work authorization</label>
-          <input id="applyWorkAuth" type="text" placeholder="Authorized to work in the US" />
-          <label class="checkbox-label">
-            <input id="applySponsorship" type="checkbox" />
-            Requires visa sponsorship
-          </label>
-          <div id="savedAnswersList" class="saved-answers-list"></div>
-          <label class="checkbox-label">
-            <input id="applyAutoEnabled" type="checkbox" />
-            Allow auto-apply when confidence is high enough
-          </label>
+          <input id="applyWorkAuth" type="text" />
+          <label class="checkbox-label"><input id="applySponsorship" type="checkbox" /> Requires visa sponsorship</label>
+          <label class="checkbox-label"><input id="applyAutoEnabled" type="checkbox" /> Allow auto-apply when confidence is high enough</label>
           <label>Minimum confidence for auto-submit (%)</label>
           <input id="applyMinConfidence" type="number" min="60" max="100" value="85" />
-          <label class="checkbox-label">
-            <input id="applyAlwaysConfirm" type="checkbox" checked />
-            Always confirm before submit
-          </label>
-          <button id="extractApplyProfileBtn" class="btn secondary" type="button">Refresh from resume</button>
+          <label class="checkbox-label"><input id="applyAlwaysConfirm" type="checkbox" checked /> Always confirm before submit</label>
           <button id="saveApplyProfileBtn" class="btn secondary" type="button">Save apply profile</button>
           <p id="applyProfileMessage" class="hint"></p>
         </section>
 
         <section class="panel">
-          <h2>Chrome extension (Phase 2)</h2>
-          <p class="hint">Fill Greenhouse and Lever forms in your browser from your local apply profile.</p>
-          <ol class="extension-steps">
-            <li>Start Career Agent with <code>.\start.ps1</code></li>
-            <li>Open <code>chrome://extensions</code> → enable <strong>Developer mode</strong></li>
-            <li>Click <strong>Load unpacked</strong> → select the <code>extension</code> folder in this project</li>
-            <li>Click the extension icon → confirm API URL is <code>http://127.0.0.1:8000</code> → <strong>Test connection</strong></li>
-            <li>In Career Agent, select a job → click <a class="link-btn" href="#" id="sidebarAssistHint">Browser assist fill</a> → click <strong>Fill from Career Agent</strong> on the posting</li>
-          </ol>
-        </section>
-
-        <section class="panel">
-          <h2>Playwright auto-fill (Phase 3)</h2>
-          <p class="hint"><code>.\start.ps1</code> installs Playwright Chromium automatically. On a job with Greenhouse or Lever posting, use <strong>Auto-fill form (no submit)</strong> to open a visible browser, or <strong>Auto-apply (submit)</strong> when auto-apply is enabled and confidence is high enough.</p>
-        </section>
-
-        <section class="panel">
-          <h2>Target companies</h2>
-          <p class="hint">Add Greenhouse, Lever, or Workday career URLs. Imports only executive titles from your profile (VP, Director, etc.) plus location filters.</p>
-          <input id="companyName" type="text" placeholder="Company name (e.g. NVIDIA)" />
-          <input id="companyUrl" type="url" placeholder="https://boards.greenhouse.io/company or myworkdayjobs.com/..." />
-          <button id="addCompanyBtn" class="btn secondary">Add company</button>
+          <h3>Target companies</h3>
+          <p class="hint">Greenhouse, Lever, or Workday career URLs.</p>
+          <input id="companyName" type="text" placeholder="Company name" />
+          <input id="companyUrl" type="url" placeholder="https://boards.greenhouse.io/company" />
+          <button id="addCompanyBtn" class="btn secondary" type="button">Add company</button>
           <div id="companyList" class="company-list"></div>
-          <button id="runCompanySearchBtn" class="btn primary">Search target companies</button>
+          <button id="runCompanySearchBtn" class="btn primary" type="button">Search target companies</button>
         </section>
 
         <section class="panel">
-          <h2>Add job manually</h2>
+          <h3>Add job manually</h3>
           <input id="manualTitle" type="text" placeholder="Job title" />
           <input id="manualCompany" type="text" placeholder="Company" />
           <input id="manualLocation" type="text" placeholder="Location" />
           <input id="manualUrl" type="url" placeholder="Job posting URL" />
-          <button id="addJobBtn" class="btn secondary">Add job</button>
+          <button id="addJobBtn" class="btn secondary" type="button">Add job</button>
+          <p id="manualJobMessage" class="hint"></p>
+        </section>
+
+        <section class="panel danger-zone">
+          <h3>Danger zone</h3>
+          <button id="deleteAllJobsBtn" class="btn danger" type="button">Delete all my jobs</button>
         </section>
       </aside>
-
-      <main class="main">
-        <header class="topbar">
-          <div>
-            <h2 id="viewTitle">Pipeline</h2>
-            <p id="viewSubtitle">Track discovery, applications, interviews, and outcomes.</p>
-          </div>
-          <div class="topbar-actions">
-            <input id="filterQuery" type="search" placeholder="Filter by title or company..." />
-            <select id="filterStatus">
-              <option value="">All statuses</option>
-              <option value="new">New</option>
-              <option value="reviewing">Reviewing</option>
-              <option value="applied">Applied</option>
-              <option value="interview">Interview</option>
-              <option value="offer">Offer</option>
-              <option value="rejected">Rejected</option>
-              <option value="passed">Passed</option>
-              <option value="withdrawn">Withdrawn</option>
-              <option value="ignored">Ignored</option>
-            </select>
-            <button id="deleteAllJobsBtn" class="btn danger" type="button">Delete all jobs</button>
-          </div>
-        </header>
-
-        <section id="statsRow" class="stats-row hidden"></section>
-
-        <section id="jobAssistant" class="assistant-card">
-          <div class="assistant-header">
-            <div>
-              <h3>Job assistant</h3>
-              <p class="hint">Describe what to do with your jobs in plain English. Destructive actions require confirmation.</p>
-            </div>
-          </div>
-          <textarea
-            id="nlJobQuery"
-            placeholder="Examples: remove all jobs from NVIDIA · ignore jobs that are not senior executive roles · show applied jobs in California"
-          ></textarea>
-          <div class="assistant-actions">
-            <button id="nlJobPlanBtn" class="btn secondary" type="button">Preview action</button>
-            <button id="nlJobExecuteBtn" class="btn danger hidden" type="button">Confirm action</button>
-            <button id="nlJobCancelBtn" class="btn secondary hidden" type="button">Cancel</button>
-          </div>
-          <div id="nlJobPlanPanel" class="assistant-plan hidden">
-            <p id="nlJobExplanation" class="assistant-explanation"></p>
-            <p id="nlJobMeta" class="hint"></p>
-            <pre id="nlJobSql" class="assistant-sql"></pre>
-            <div id="nlJobPreview" class="assistant-preview"></div>
-          </div>
-        </section>
-
-        <section id="pipelineView" class="content-grid">
-          <div class="table-card pipeline-list-panel">
-            <table>
-              <thead>
-                <tr>
-                  <th>Role</th>
-                  <th>Company</th>
-                  <th>Location</th>
-                  <th>Fit</th>
-                  <th>Apply</th>
-                  <th>Status</th>
-                  <th>Source</th>
-                  <th>Updated</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="jobsTableBody"></tbody>
-            </table>
-          </div>
-
-          <div
-            id="pipelineResizer"
-            class="pipeline-resizer"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize job list and detail panels"
-            tabindex="0"
-          ></div>
-
-          <div id="jobDetail" class="detail-card pipeline-detail-panel empty">
-            <h3>Select a job</h3>
-            <p>Choose a role to review details, update status, add notes, and open the posting.</p>
-          </div>
-        </section>
-
-        <section id="dashboardView" class="dashboard hidden">
-          <div id="dashboardCards" class="dashboard-cards"></div>
-          <div class="table-card">
-            <h3>Recent activity</h3>
-            <div id="recentJobs"></div>
-          </div>
-        </section>
-      </main>
     </div>
+
+    <div id="toast" class="toast hidden"></div>
 
     <script src="/assets/app.js"></script>
   </body>

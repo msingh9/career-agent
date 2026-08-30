@@ -157,3 +157,16 @@ class AutoApplyResult(BaseModel):
     submitted: bool = False
     attempt_id: int | None = None
     screenshot_path: str | None = None
+
+
+class AgenticApplyResult(BaseModel):
+    job_id: int
+    status: str
+    message: str
+    final_url: str | None = None
+    filled_fields: list[str] = Field(default_factory=list)
+    unmapped_fields: list[str] = Field(default_factory=list)
+    blocker: str | None = None
+    has_next: bool = False
+    attempt_id: int | None = None
+    screenshot_path: str | None = None

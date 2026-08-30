@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from ..database import RESUMES_DIR
 from ..models import ApplyAttempt, Job, JobStatus
 from ..schemas_apply import (
+    AgenticApplyResult,
     ApplyAttemptRead,
     ApplyFeasibility,
     ApplyFillPayload,
@@ -14,6 +16,7 @@ from ..schemas_apply import (
     PrepareApplyResult,
 )
 from .apply_automation import run_apply_automation
+from .agentic_apply import run_agentic_apply
 from .apply_profile import read_apply_profile
 from .apply_feasibility import assess_apply_feasibility
 from .apply_fill_payload import build_fill_payload, career_agent_job_url, kit_from_job
@@ -36,12 +39,12 @@ def _store_apply_state(job: Job, feasibility: ApplyFeasibility, kit: ApplyKit) -
     return prepared_at
 
 
-def get_apply_status(db: Session, job_id: int) -> ApplyStatusRead:
-    job = db.query(Job).filter(Job.id == job_id).one_or_none()
+def get_apply_status(db: Session, job_id: int, user_id: int) -> ApplyStatusRead:
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
     if not job:
         raise ValueError("Job not found.")
 
-    profile = get_or_create_profile(db)
+    profile = get_or_create_profile(db, user_id)
     feasibility = assess_apply_feasibility(job, profile)
     kit = _kit_from_job(job)
 
@@ -61,12 +64,12 @@ def get_apply_status(db: Session, job_id: int) -> ApplyStatusRead:
     )
 
 
-def prepare_apply(db: Session, job_id: int) -> PrepareApplyResult:
-    job = db.query(Job).filter(Job.id == job_id).one_or_none()
+def prepare_apply(db: Session, job_id: int, user_id: int) -> PrepareApplyResult:
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
     if not job:
         raise ValueError("Job not found.")
 
-    profile = get_or_create_profile(db)
+    profile = get_or_create_profile(db, user_id)
     feasibility = assess_apply_feasibility(job, profile)
     kit = build_apply_kit(job, profile)
     prepared_at = _store_apply_state(job, feasibility, kit)
@@ -100,8 +103,8 @@ def prepare_apply(db: Session, job_id: int) -> PrepareApplyResult:
     )
 
 
-def complete_apply(db: Session, job_id: int, note: str | None = None) -> Job:
-    job = db.query(Job).filter(Job.id == job_id).one_or_none()
+def complete_apply(db: Session, job_id: int, user_id: int, note: str | None = None) -> Job:
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
     if not job:
         raise ValueError("Job not found.")
 
@@ -126,8 +129,8 @@ def complete_apply(db: Session, job_id: int, note: str | None = None) -> Job:
     return job
 
 
-def list_apply_attempts(db: Session, job_id: int) -> list[ApplyAttemptRead]:
-    job = db.query(Job).filter(Job.id == job_id).one_or_none()
+def list_apply_attempts(db: Session, job_id: int, user_id: int) -> list[ApplyAttemptRead]:
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
     if not job:
         raise ValueError("Job not found.")
 
@@ -140,19 +143,19 @@ def list_apply_attempts(db: Session, job_id: int) -> list[ApplyAttemptRead]:
     return [ApplyAttemptRead.model_validate(item) for item in attempts]
 
 
-def get_fill_payload(db: Session, job_id: int) -> ApplyFillPayload:
-    job = db.query(Job).filter(Job.id == job_id).one_or_none()
+def get_fill_payload(db: Session, job_id: int, user_id: int) -> ApplyFillPayload:
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
     if not job:
         raise ValueError("Job not found.")
-    profile = get_or_create_profile(db)
+    profile = get_or_create_profile(db, user_id)
     return build_fill_payload(job, profile)
 
 
-def get_assist_url(db: Session, job_id: int) -> dict:
-    job = db.query(Job).filter(Job.id == job_id).one_or_none()
+def get_assist_url(db: Session, job_id: int, user_id: int) -> dict:
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
     if not job:
         raise ValueError("Job not found.")
-    profile = get_or_create_profile(db)
+    profile = get_or_create_profile(db, user_id)
     feasibility = assess_apply_feasibility(job, profile)
     if feasibility.ats_type not in {"greenhouse", "lever"}:
         raise ValueError("Browser assist fill is only available for Greenhouse and Lever postings.")
@@ -178,18 +181,19 @@ def get_assist_url(db: Session, job_id: int) -> dict:
 def run_auto_apply(
     db: Session,
     job_id: int,
+    user_id: int,
     *,
     confirmed: bool,
     submit: bool,
 ) -> AutoApplyResult:
-    job = db.query(Job).filter(Job.id == job_id).one_or_none()
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
     if not job:
         raise ValueError("Job not found.")
 
     if not confirmed:
         raise ValueError("Confirmation is required before auto-apply.")
 
-    profile = get_or_create_profile(db)
+    profile = get_or_create_profile(db, user_id)
     feasibility = assess_apply_feasibility(job, profile)
     apply_profile = read_apply_profile(profile)
 
@@ -207,8 +211,8 @@ def run_auto_apply(
         raise ValueError("Add your email in Apply profile before auto-fill.")
 
     if not _kit_from_job(job):
-        prepare_apply(db, job_id)
-        job = db.query(Job).filter(Job.id == job_id).one()
+        prepare_apply(db, job_id, user_id)
+        job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one()
 
     result = run_apply_automation(job, profile, submit=submit, headless=True)
 
@@ -246,6 +250,63 @@ def run_auto_apply(
         message=result.message,
         filled_fields=result.filled_fields,
         submitted=result.submitted,
+        attempt_id=attempt.id,
+        screenshot_path=result.screenshot_path,
+    )
+
+
+def run_agentic_apply_job(db: Session, job_id: int, user_id: int) -> AgenticApplyResult:
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one_or_none()
+    if not job:
+        raise ValueError("Job not found.")
+
+    profile = get_or_create_profile(db, user_id)
+    apply_profile = read_apply_profile(profile)
+    if not apply_profile.identity.email.strip():
+        raise ValueError("Add your email in Apply profile before agentic apply.")
+
+    # Ensure a kit exists so cover letter / answers are available to the filler.
+    if not kit_from_job(job):
+        prepare_apply(db, job_id, user_id)
+        job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).one()
+
+    payload = build_fill_payload(job, profile)
+    resume_path = None
+    if payload.resume_filename:
+        candidate = RESUMES_DIR / payload.resume_filename
+        if candidate.exists():
+            resume_path = candidate
+
+    result = run_agentic_apply(payload, resume_path)
+
+    attempt = ApplyAttempt(
+        job_id=job.id,
+        mode="assisted",
+        status=result.status if result.success else "failed",
+        confidence=payload.confidence,
+        ats_type=payload.ats_type,
+        message=result.message,
+    )
+    db.add(attempt)
+
+    if result.success:
+        add_status_event(
+            db, job, JobStatus.REVIEWING,
+            note="Agentic apply filled the form — review and submit",
+        )
+
+    db.commit()
+    db.refresh(attempt)
+
+    return AgenticApplyResult(
+        job_id=job.id,
+        status=result.status,
+        message=result.message,
+        final_url=result.final_url,
+        filled_fields=result.filled_fields,
+        unmapped_fields=result.unmapped_fields,
+        blocker=result.blocker,
+        has_next=result.has_next,
         attempt_id=attempt.id,
         screenshot_path=result.screenshot_path,
     )

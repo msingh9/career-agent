@@ -26,10 +26,12 @@ def ensure_target_company_schema() -> None:
             conn.execute(text("ALTER TABLE target_companies ADD COLUMN workday_host VARCHAR(300)"))
 
 
-def seed_default_companies(db: Session) -> int:
+def seed_default_companies(db: Session, user_id: int) -> int:
     existing_urls = {
-        company.careers_url.strip().lower()
-        for company in db.query(TargetCompany.careers_url).all()
+        row[0].strip().lower()
+        for row in db.query(TargetCompany.careers_url)
+        .filter(TargetCompany.user_id == user_id)
+        .all()
     }
     added = 0
 
@@ -42,7 +44,9 @@ def seed_default_companies(db: Session) -> int:
         if parsed.ats_type == "unsupported":
             continue
 
-        company = TargetCompany(name=item["name"].strip(), careers_url=careers_url)
+        company = TargetCompany(
+            name=item["name"].strip(), careers_url=careers_url, user_id=user_id
+        )
         apply_parsed_company_fields(company, careers_url)
         db.add(company)
         existing_urls.add(careers_url.lower())
