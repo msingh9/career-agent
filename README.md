@@ -44,3 +44,7 @@ Everything runs locally; your data stays in `data/` on your machine.
 ---
 
 Building on or contributing to Career Agent? See **[README.dev.md](README.dev.md)** for architecture, configuration, the API, and how auto-apply works under the hood.
+
+## License
+
+Licensed under the **Apache License 2.0** — see [LICENSE](LICENSE). © 2026 Manish Singh.
