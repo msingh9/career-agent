@@ -233,6 +233,8 @@ label { font-size: 0.8rem; font-weight: 600; color: var(--muted); }
 .apply-meta { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0; }
 .tag { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 0.15rem 0.6rem; font-size: 0.78rem; }
 .reasons { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.85rem; color: var(--muted); }
+.ats-row { margin-top: 0.5rem; font-size: 0.9rem; }
+.ats-warn { color: var(--danger); font-weight: 600; }
 
 /* ---------------- Drawer ---------------- */
 .drawer-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 90; display: flex; justify-content: flex-end; }

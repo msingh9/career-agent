@@ -59,6 +59,8 @@ class JobRead(JobBase):
     fit_method: str | None = None
     fit_message: str | None = None
     fit_analyzed_at: datetime | None = None
+    ats_coverage: int | None = None
+    ats_missing_keywords: list[str] = Field(default_factory=list)
     apply_mode: str | None = None
     apply_confidence: int | None = None
     apply_prepared_at: datetime | None = None
@@ -189,3 +191,5 @@ class JobFitResult(BaseModel):
     method: str
     message: str | None = None
     analyzed_at: datetime
+    ats_coverage: int | None = None
+    ats_missing_keywords: list[str] = Field(default_factory=list)

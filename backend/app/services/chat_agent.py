@@ -87,18 +87,30 @@ async def run_chat(db: Session, user: User, message: str) -> ChatResponse:
     plan = create_plan(db, text, user.id)
     action = plan.action
 
-    # --- Resume-based job search -------------------------------------------
+    # --- Job search: use criteria from the chat message, else the profile ---
     if action == "search":
-        profile = get_or_create_profile(db, user.id)
-        if not profile.resume_filename:
-            return ChatResponse(
-                reply=(
-                    "Upload your resume first and I'll use it to search. "
-                    "You can drop it in from the panel above the chat."
-                ),
-                action="search",
+        crit = _profile_criteria(db, user.id)
+        # The chat message overrides profile criteria when it describes what to find.
+        titles = plan.search_titles or crit["titles"]
+        keywords = plan.search_keywords or crit["keywords"]
+        locations = plan.search_locations or crit["locations"]
+
+        if not titles and not keywords:
+            profile = get_or_create_profile(db, user.id)
+            hint = (
+                "Tell me what to search for — e.g. \"search for ML engineer intern jobs in California\" — "
+                "or upload your resume and I'll build your criteria automatically."
+                if not profile.resume_filename
+                else "Your profile has no titles/keywords yet. Describe what to search for, or set them in Settings."
             )
-        result = await run_job_search(db, user.id, **_profile_criteria(db, user.id))
+            return ChatResponse(reply=hint, action="search")
+
+        result = await run_job_search(
+            db, user.id,
+            titles=titles, keywords=keywords, locations=locations,
+            skills=crit["skills"], industries=crit["industries"],
+            exclude_keywords=crit["exclude_keywords"], seniority=crit["seniority"],
+        )
         return ChatResponse(
             reply=result.get("message", "Search complete."),
             action="search",

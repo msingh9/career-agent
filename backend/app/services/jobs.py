@@ -43,6 +43,8 @@ def job_to_read(job: Job) -> JobRead:
         fit_method=job.fit_method,
         fit_message=job.fit_message,
         fit_analyzed_at=job.fit_analyzed_at,
+        ats_coverage=job.ats_coverage,
+        ats_missing_keywords=job.get_fit_list("ats_missing"),
         apply_mode=job.apply_mode,
         apply_confidence=job.apply_confidence,
         apply_prepared_at=job.apply_prepared_at,

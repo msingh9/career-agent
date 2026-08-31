@@ -50,7 +50,7 @@ Allowed actions:
 - delete: permanently remove matching jobs
 - update: change fields on matching jobs
 - ignore: set status to "ignored" (preferred when user says hide/ignore/dismiss)
-- search: run a new job search from the user's saved resume/profile criteria (use when the user says find/search jobs based on my resume/profile)
+- search: run a new job search. If the user describes what to look for (roles/titles, skills/keywords, locations), extract them into search_titles / search_keywords / search_locations. If they just say "search from my resume/profile", leave those empty to use saved criteria.
 - company_search: search a specific company's careers page for roles (use when the user names a company to search, e.g. "search Nvidia", "find jobs at Stripe"). Put the company name in company_name. If the user includes a careers URL (greenhouse.io / lever.co / myworkdayjobs.com), put it in company_url.
 
 Status values: new, reviewing, applied, rejected, interview, offer, withdrawn, passed, ignored
@@ -64,6 +64,9 @@ Return JSON only:
   "explanation": "plain English summary of what will happen",
   "company_name": null,
   "company_url": null,
+  "search_titles": [],
+  "search_keywords": [],
+  "search_locations": [],
   "filters": {
     "company_contains": [],
     "company_excludes": [],
@@ -75,7 +78,9 @@ Return JSON only:
     "status_not_in": [],
     "notes_contains": [],
     "senior_executive_only": false,
-    "non_senior_only": false
+    "non_senior_only": false,
+    "relevance_below": null,
+    "relevance_at_least": null
   },
   "update": {
     "status": null,
@@ -89,6 +94,7 @@ Rules:
 - Use ignore action when user says ignore/hide/dismiss; use delete only for remove/delete
 - For "not senior executive" set non_senior_only true and/or title_excludes with senior terms
 - For "senior executive only" set senior_executive_only true
+- For relevance/match/fit percentage to the profile: "below/less than/under N%" or "not more than N%" -> relevance_below = N; "at least/above/more than N%" -> relevance_at_least = N. These compare against the job's profile match score (0-100).
 - Keep filter terms lowercase short strings
 - update.status only for update/ignore actions
 """
@@ -312,12 +318,48 @@ def normalize_plan_data(
     return action, explanation, filters, update, company_name, company_url
 
 
+def _has_any_filter(f: JobQueryFilters) -> bool:
+    return any([
+        f.company_contains, f.company_excludes, f.title_contains, f.title_excludes,
+        f.location_contains, f.source_in, f.status_in, f.status_not_in, f.notes_contains,
+        f.senior_executive_only, f.non_senior_only,
+        f.relevance_below is not None, f.relevance_at_least is not None,
+    ])
+
+
+def _relevance_filtered(jobs, filters: JobQueryFilters, db: Session, user_id: int):
+    """Filter jobs by profile match score (relevance %) — computed, not a SQL column."""
+    below, at_least = filters.relevance_below, filters.relevance_at_least
+    if below is None and at_least is None:
+        return jobs
+    from .profile import get_or_create_profile
+    from .profile_match import job_match_score
+
+    p = get_or_create_profile(db, user_id)
+    titles, keywords, skills = p.get_list("titles"), p.get_list("keywords"), p.get_list("skills")
+    industries, exclude, sen = p.get_list("industries"), p.get_list("exclude_keywords"), p.seniority
+    out = []
+    for j in jobs:
+        payload = {"title": j.title, "description": j.description or j.description_summary or ""}
+        s = job_match_score(payload, titles, keywords, skills, industries, sen, exclude)
+        if below is not None and s > below:
+            continue
+        if at_least is not None and s < at_least:
+            continue
+        out.append(j)
+    return out
+
+
 def create_plan(db: Session, query: str, user_id: int) -> NLJobPlan:
     raw = generate_plan_from_query(query)
     action, explanation, filters, update, company_name, company_url = normalize_plan_data(raw)
 
     # search / company_search do not filter existing jobs; skip the preview query.
     if action in {"search", "company_search"}:
+        def _strlist(key):
+            val = raw.get(key) or []
+            return [str(v).strip() for v in val if str(v).strip()] if isinstance(val, list) else []
+
         return NLJobPlan(
             action=action,
             explanation=explanation,
@@ -329,9 +371,13 @@ def create_plan(db: Session, query: str, user_id: int) -> NLJobPlan:
             preview_jobs=[],
             company_name=company_name,
             company_url=company_url,
+            search_titles=_strlist("search_titles"),
+            search_keywords=_strlist("search_keywords"),
+            search_locations=_strlist("search_locations"),
         )
 
     jobs = build_jobs_query(db, filters, user_id).order_by(Job.updated_at.desc()).all()
+    jobs = _relevance_filtered(jobs, filters, db, user_id)
     preview_jobs = [
         JobPreview(
             id=job.id,
@@ -345,6 +391,9 @@ def create_plan(db: Session, query: str, user_id: int) -> NLJobPlan:
     ]
 
     requires_confirmation = action in {"delete", "update", "ignore"}
+    # Safety: a destructive action with no filter at all would hit every job.
+    if requires_confirmation and not _has_any_filter(filters):
+        explanation = "⚠ No filter was detected, so this matches ALL your jobs. " + explanation
     sql_preview = build_sql_preview(filters, action, update)
 
     return NLJobPlan(
@@ -366,6 +415,7 @@ def execute_plan(db: Session, plan: NLJobPlan, confirmed: bool, user_id: int) ->
         raise ValueError("Confirmation is required before running this action.")
 
     jobs = build_jobs_query(db, plan.filters, user_id).all()
+    jobs = _relevance_filtered(jobs, plan.filters, db, user_id)
     if not jobs:
         return 0, "No jobs matched your request."
 

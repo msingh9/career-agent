@@ -38,8 +38,16 @@ def create_user(db: Session, name: str) -> UserRead:
     db.commit()
     db.refresh(user)
 
-    # Give the new profile its own default search profile and target companies.
-    get_or_create_profile(db, user.id)
+    # Give the new profile its own search profile — but start it NEUTRAL (no
+    # inherited semiconductor/senior-director env defaults). Criteria are filled
+    # from the resume on first upload, so fit/search aren't biased before then.
+    profile = get_or_create_profile(db, user.id)
+    for field in ("titles", "keywords", "locations", "skills", "industries", "exclude_keywords"):
+        profile.set_list(field, [])
+    profile.seniority = None
+    profile.summary = None
+    db.commit()
+
     seed_default_companies(db, user.id)
 
     return user_to_read(db, user)

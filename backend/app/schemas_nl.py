@@ -13,6 +13,9 @@ class JobQueryFilters(BaseModel):
     notes_contains: list[str] = Field(default_factory=list)
     senior_executive_only: bool = False
     non_senior_only: bool = False
+    # Profile match-score (relevance) thresholds, 0-100.
+    relevance_below: int | None = None  # keep jobs scoring <= this
+    relevance_at_least: int | None = None  # keep jobs scoring >= this
 
 
 class JobQueryUpdate(BaseModel):
@@ -45,6 +48,11 @@ class NLJobPlan(BaseModel):
     # Populated for the company_search action.
     company_name: str | None = None
     company_url: str | None = None
+    # Populated for the search action from the chat message itself (used when the
+    # profile has no resume/criteria, or to override them for this search).
+    search_titles: list[str] = Field(default_factory=list)
+    search_keywords: list[str] = Field(default_factory=list)
+    search_locations: list[str] = Field(default_factory=list)
 
 
 class NLJobExecuteRequest(BaseModel):

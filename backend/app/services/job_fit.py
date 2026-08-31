@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import json
 import re
@@ -16,27 +16,33 @@ from .profile import get_or_create_profile, profile_to_read
 from .profile_match import is_executive_title
 from .resume_parser import extract_text_from_resume
 
-SYSTEM_PROMPT = """You assess how well a candidate fits a specific job posting.
+SYSTEM_PROMPT = """You are a STRICT hiring screener deciding whether a candidate would pass the
+INITIAL resume screen for a specific job, judged against a typical pool of applicants for that role.
 
-The candidate is targeting senior semiconductor leadership roles (VP, Senior Director, Director).
-Apply is always manual — provide guidance only, never instructions to auto-apply.
+Judge using ONLY the candidate's actual profile and resume in the user message (target titles,
+seniority/level, domain, skills, industries). Do not assume any field or seniority.
+
+This is a COMPETITIVENESS rating vs other applicants, NOT a topical-relevance rating:
+- Relevant background is table stakes, not a high score.
+- Reserve 85+ ONLY for candidates who clearly exceed the bar and would stand out (exact must-have
+  skills, notable brands/impact, clear level fit).
+- Most qualified-but-ordinary applicants land 50-72. Actively penalize: generic overlap, missing
+  must-have requirements, level/seniority mismatch, thin or vague evidence, and lack of the exact
+  keywords an ATS screens on. Popular roles are highly competitive — score accordingly.
+- Do not inflate. If in doubt, score lower.
 
 Return JSON only:
 {
-  "score": 0-100,
+  "score": 0-100,             // likelihood of PASSING the initial screen vs the applicant pool
   "verdict": "Strong fit|Moderate fit|Weak fit|Poor fit",
-  "summary": "2-3 sentences on overall fit",
-  "strengths": ["3-6 specific alignment points"],
-  "gaps": ["2-5 gaps, missing experience, or risks"]
+  "summary": "2-3 sentences: how competitive this candidate is, and the biggest screening risk",
+  "strengths": ["3-6 concrete edges vs a typical applicant"],
+  "gaps": ["2-5 screening risks or missing must-haves"],
+  "ats_coverage": 0-100,      // % of the job's important keywords/requirements present in the resume
+  "missing_keywords": ["important skills/terms in the JD that are ABSENT from the resume — what to add"]
 }
 
-Scoring guide:
-- 80-100: Strong fit — title level aligns, core domain/skills match well
-- 60-79: Moderate fit — worth pursuing with some gaps to address
-- 40-59: Weak fit — notable mismatches in level, domain, or scope
-- 0-39: Poor fit — major misalignment
-
-Be direct and practical. Focus on semiconductor/chip/hardware leadership relevance."""
+Be direct and realistic. A high score should predict an interview, not just relevance."""
 
 JD_SIGNAL_TERMS = [
     "semiconductor",
@@ -86,6 +92,8 @@ FIT_COLUMNS = (
     ("fit_method", "VARCHAR(30)"),
     ("fit_message", "TEXT"),
     ("fit_analyzed_at", "DATETIME"),
+    ("ats_coverage", "INTEGER"),
+    ("ats_missing", "TEXT"),
 )
 
 
@@ -98,6 +106,8 @@ class FitAnalysis:
     gaps: list[str]
     method: str
     message: str | None = None
+    ats_coverage: int | None = None
+    missing_keywords: list[str] = field(default_factory=list)
 
 
 def ensure_job_fit_schema() -> None:
@@ -302,6 +312,9 @@ def _openai_fit(
     score = max(0, min(100, int(data.get("score", 0))))
     strengths = [str(item).strip() for item in data.get("strengths", []) if str(item).strip()][:6]
     gaps = [str(item).strip() for item in data.get("gaps", []) if str(item).strip()][:5]
+    missing = [str(item).strip() for item in data.get("missing_keywords", []) if str(item).strip()][:12]
+    ats = data.get("ats_coverage")
+    ats = max(0, min(100, int(ats))) if isinstance(ats, (int, float)) else None
     return FitAnalysis(
         score=score,
         verdict=(data.get("verdict") or _verdict_for_score(score)).strip(),
@@ -309,7 +322,9 @@ def _openai_fit(
         strengths=strengths or ["No specific strengths identified."],
         gaps=gaps or ["No specific gaps identified."],
         method="openai",
-        message="AI fit analysis based on your resume and profile. Apply manually on the company site.",
+        message="AI screening estimate vs a typical applicant pool. Apply manually on the company site.",
+        ats_coverage=ats,
+        missing_keywords=missing,
     )
 
 
@@ -323,6 +338,8 @@ def _save_fit_analysis(db: Session, job: Job, analysis: FitAnalysis) -> JobFitRe
     job.fit_method = analysis.method
     job.fit_message = analysis.message
     job.fit_analyzed_at = analyzed_at
+    job.ats_coverage = analysis.ats_coverage
+    job.ats_missing = json.dumps(analysis.missing_keywords) if analysis.missing_keywords else None
     db.commit()
     db.refresh(job)
     return JobFitResult(
@@ -330,6 +347,8 @@ def _save_fit_analysis(db: Session, job: Job, analysis: FitAnalysis) -> JobFitRe
         score=analysis.score,
         verdict=analysis.verdict,
         summary=analysis.summary,
+        ats_coverage=analysis.ats_coverage,
+        ats_missing_keywords=analysis.missing_keywords,
         strengths=analysis.strengths,
         gaps=analysis.gaps,
         method=analysis.method,

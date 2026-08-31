@@ -84,6 +84,8 @@ class Job(Base):
     fit_method: Mapped[str | None] = mapped_column(String(30))
     fit_message: Mapped[str | None] = mapped_column(Text)
     fit_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    ats_coverage: Mapped[int | None] = mapped_column(Integer)
+    ats_missing: Mapped[str | None] = mapped_column(Text)
     apply_mode: Mapped[str | None] = mapped_column(String(30))
     apply_confidence: Mapped[int | None] = mapped_column(Integer)
     apply_reasons: Mapped[str | None] = mapped_column(Text)

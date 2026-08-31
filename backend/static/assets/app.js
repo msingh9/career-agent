@@ -399,10 +399,15 @@ function renderJobModal(job, apply) {
     .map((s) => `<option value="${s}" ${s === job.status ? "selected" : ""}>${STATUS_LABELS[s]}</option>`)
     .join("");
 
+  const missing = job.ats_missing_keywords || [];
+  const atsBlock = job.ats_coverage != null ? `
+      <div class="ats-row"><strong>ATS keyword coverage:</strong> ${job.ats_coverage}%${job.ats_coverage < 60 ? ' <span class="ats-warn">— tailor your resume</span>' : ""}</div>
+      ${missing.length ? `<div class="muted small">Missing JD keywords (add if true): ${missing.map(esc).join(", ")}</div>` : ""}` : "";
   const fitBlock = job.fit_score != null ? `
     <div class="modal-section">
-      <h4>Fit ${fitBadge(job)} <span class="muted small">${esc(job.fit_verdict || "")}</span></h4>
+      <h4>Screening fit ${fitBadge(job)} <span class="muted small">${esc(job.fit_verdict || "")}</span></h4>
       <p class="muted">${esc(job.fit_summary || "")}</p>
+      ${atsBlock}
     </div>` : "";
 
   const feasBlock = f ? `
@@ -445,12 +450,12 @@ function renderJobModal(job, apply) {
   const id = job.id;
   $("#mAnalyze").addEventListener("click", async (e) => {
     e.target.disabled = true; e.target.textContent = "Analyzing…";
-    try { await apiFetch(`/jobs/${id}/fit`, { method: "POST" }); toast("Fit analyzed"); openJobModal(id); }
+    try { await apiFetch(`/jobs/${id}/fit`, { method: "POST" }); toast("Fit analyzed"); state.jobsDirty = true; openJobModal(id); }
     catch (err) { toast(err.message, true); e.target.disabled = false; }
   });
   $("#mPrepare").addEventListener("click", async (e) => {
     e.target.disabled = true; e.target.textContent = "Preparing…";
-    try { const r = await apiFetch(`/jobs/${id}/apply/prepare`, { method: "POST" }); toast(r.message); openJobModal(id); }
+    try { const r = await apiFetch(`/jobs/${id}/apply/prepare`, { method: "POST" }); toast(r.message); state.jobsDirty = true; openJobModal(id); }
     catch (err) { toast(err.message, true); e.target.disabled = false; }
   });
   $("#mAgentic").addEventListener("click", () => agenticApply(id));
